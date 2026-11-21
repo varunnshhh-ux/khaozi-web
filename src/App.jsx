@@ -1,16 +1,43 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  MapPin, Navigation, Star, ShieldCheck, Tag, Plus,
+  MapPin, Navigation, Star, Shield, Tag, Plus,
   Search, AlertTriangle, Store, Radio, Sparkles, Utensils,
   X, Map, List, Crosshair, Smartphone, Monitor, Heart,
-  Share2, Compass, Users, Trash2
+  Share2, Compass, Users, Trash2, Eye, BarChart3, LogOut, CheckCircle2
 } from 'lucide-react';
 
 // ============================================================================
-// CONSTANTS & LOCALIZATION
+// CONSTANTS & SAFE STORAGE HELPERS
 // ============================================================================
-const STORAGE_KEY = 'khaozi_vendors_v1';
+const STORAGE_KEY = 'khaozi_vendors_v2';
+const SESSION_KEY = 'khaozi_session_v2';
+const FOLLOWS_KEY = 'khaozi_follows_v2';
 const CHANNEL_NAME = 'khaozi_live_sync_channel';
+
+const safeStorage = {
+  get: (key, fallback = null) => {
+    try {
+      const val = window.localStorage.getItem(key);
+      return val ? JSON.parse(val) : fallback;
+    } catch {
+      return fallback;
+    }
+  },
+  set: (key, value) => {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Ignore storage quota / sandbox restrictions
+    }
+  },
+  remove: (key) => {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // Ignore
+    }
+  }
+};
 
 const FOOD_CATEGORIES = [
   { name: 'All', emoji: '🍽️' },
@@ -40,6 +67,7 @@ const INITIAL_VENDORS = [
     rating: 4.9,
     followersCount: 142,
     crowdStatus: 'Thodi Bheed',
+    stallOpenStatus: 'Here Now',
     planType: 'FOUNDER_10',
     subscriptionStatus: 'trial_active',
     lastLocationUpdatedAt: Date.now() - 3 * 60 * 1000,
@@ -73,6 +101,7 @@ const INITIAL_VENDORS = [
     rating: 4.8,
     followersCount: 215,
     crowdStatus: 'Full Rush',
+    stallOpenStatus: 'Here Now',
     planType: 'FOUNDER_10',
     subscriptionStatus: 'trial_active',
     lastLocationUpdatedAt: Date.now() - 8 * 60 * 1000,
@@ -106,6 +135,7 @@ const INITIAL_VENDORS = [
     rating: 4.9,
     followersCount: 310,
     crowdStatus: 'No Wait',
+    stallOpenStatus: 'Here Now',
     planType: 'FOUNDER_10',
     subscriptionStatus: 'trial_active',
     lastLocationUpdatedAt: Date.now() - 1 * 60 * 1000,
@@ -124,7 +154,11 @@ const TRANSLATIONS = {
   EN: {
     discover: 'Discover',
     offers: 'Offers',
-    vendorHub: 'Vendor Hub',
+    saved: 'Saved Stalls',
+    liveBroadcast: 'Live GPS & Rush',
+    menuOffers: 'Menu & Offers',
+    analyticsPlan: 'Analytics & Plan',
+    customerPreview: 'Customer Preview',
     admin: 'Admin',
     heroTitle: 'Aaj kya khana hai?',
     heroSubtitle: 'Find live moving street-food carts near your metro gate, college & chowk.',
@@ -137,7 +171,11 @@ const TRANSLATIONS = {
   HI: {
     discover: 'खोजें',
     offers: 'ऑफ़र्स',
-    vendorHub: 'ठेला पोर्टल',
+    saved: 'पसंदीदा',
+    liveBroadcast: 'लाइव GPS और भीड़',
+    menuOffers: 'मेनू और ऑफ़र्स',
+    analyticsPlan: 'रिपोर्ट और प्लान',
+    customerPreview: 'ग्राहक व्यू देखें',
     admin: 'एडमिन',
     heroTitle: 'आज क्या खाना है?',
     heroSubtitle: 'अपने पास के मेट्रो गेट, कॉलेज और चौक पर लगे लाइव ठेले तुरंत खोजें।',
@@ -179,67 +217,55 @@ function formatFreshness(timestamp, nowMs) {
 // MAIN APPLICATION COMPONENT
 // ============================================================================
 export default function App() {
-  // Language & Viewport States
   const [lang, setLang] = useState('EN');
   const [isMobileFrame, setIsMobileFrame] = useState(false);
-  const [activeTab, setActiveTab] = useState('discover');
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Vendors State with LocalStorage + Multi-Tab Live Sync
+  // Role-Based Session: { role: 'customer' | 'vendor' | 'admin', contact, vendorId? }
+  const [session, setSession] = useState(() => safeStorage.get(SESSION_KEY, null));
+  const currentRole = session?.role || 'customer';
+
+  // Role-specific active tab
+  const [activeTab, setActiveTab] = useState(() => {
+    const savedSession = safeStorage.get(SESSION_KEY, null);
+    return savedSession?.role === 'vendor' ? 'vendor_gps' : 'discover';
+  });
+
+  // Vendors State
   const [vendors, setVendors] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch (e) {
-      console.error(e);
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_VENDORS));
+    const saved = safeStorage.get(STORAGE_KEY, null);
+    if (Array.isArray(saved) && saved.length > 0) return saved;
+    safeStorage.set(STORAGE_KEY, INITIAL_VENDORS);
     return INITIAL_VENDORS;
   });
 
-  // Customer Auth & Geolocation States
-  const [customerAuth, setCustomerAuth] = useState(() => {
-    try {
-      const saved = localStorage.getItem('khaozi_customer_auth');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  // Geolocation & Customer Follows
   const [userLocation, setUserLocation] = useState(null);
   const [isLocatingUser, setIsLocatingUser] = useState(false);
-  const [followedVendorIds, setFollowedVendorIds] = useState(() => {
-    try {
-      const saved = localStorage.getItem('khaozi_follows');
-      return saved ? JSON.parse(saved) : ['v_1'];
-    } catch {
-      return ['v_1'];
-    }
-  });
+  const [followedVendorIds, setFollowedVendorIds] = useState(() =>
+    safeStorage.get(FOLLOWS_KEY, ['v_1'])
+  );
 
-  // Filtering & Search States
+  // Customer Filtering & Search
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [vegOnlyFilter, setVegOnlyFilter] = useState(false);
-  const [favoritesOnlyFilter, setFavoritesOnlyFilter] = useState(false);
   const [sortBy, setSortBy] = useState('distance');
   const [viewMode, setViewMode] = useState('list');
 
-  // Modals & Active Selections
+  // Modals
   const [selectedVendorId, setSelectedVendorId] = useState(null);
   const [showRoleModal, setShowRoleModal] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [roleModalView, setRoleModalView] = useState('choose'); // 'choose' | 'customer_login' | 'vendor_login' | 'vendor_register'
   const [authInput, setAuthInput] = useState('');
+  const [vendorLoginPhone, setVendorLoginPhone] = useState('');
   const [pendingDirectionVendor, setPendingDirectionVendor] = useState(null);
   const [reportModalVendor, setReportModalVendor] = useState(null);
   const [reportReason, setReportReason] = useState('Wrong / Old Location');
   const [reportDetails, setReportDetails] = useState('');
 
-  // Registration Form State
+  // Vendor Registration Form
   const [regForm, setRegForm] = useState({
     name: '',
     ownerName: '',
@@ -249,8 +275,8 @@ export default function App() {
     isVeg: true
   });
 
-  // Vendor Portal States
-  const [managingVendorId, setManagingVendorId] = useState('v_1');
+  // Vendor Console States
+  const [managingVendorId, setManagingVendorId] = useState(() => session?.vendorId || 'v_1');
   const [vendorLandmarkInput, setVendorLandmarkInput] = useState('');
   const [isBroadcastingGps, setIsBroadcastingGps] = useState(false);
   const [newMenuItemName, setNewMenuItemName] = useState('');
@@ -267,53 +293,61 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3200);
   };
 
-  // Live Clock Tick every 15s for Freshness Timestamps
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 15000);
     return () => clearInterval(timer);
   }, []);
 
-  // Multi-tab real-time sync listener
+  // Safe Multi-tab BroadcastChannel sync
   useEffect(() => {
     let bc = null;
-    if (typeof BroadcastChannel !== 'undefined') {
-      bc = new BroadcastChannel(CHANNEL_NAME);
-      bc.onmessage = (event) => {
-        if (event.data?.type === 'SYNC_VENDORS' && Array.isArray(event.data.payload)) {
-          setVendors(event.data.payload);
-        }
-      };
-    }
-    const handleStorage = (e) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
-        try {
-          setVendors(JSON.parse(e.newValue));
-        } catch (err) {
-          console.error(err);
-        }
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        bc = new window.BroadcastChannel(CHANNEL_NAME);
+        bc.onmessage = (event) => {
+          if (event.data?.type === 'SYNC_VENDORS' && Array.isArray(event.data.payload)) {
+            setVendors(event.data.payload);
+          }
+        };
       }
-    };
-    window.addEventListener('storage', handleStorage);
+    } catch {
+      // Ignore if BroadcastChannel blocked in iframe
+    }
     return () => {
-      if (bc) bc.close();
-      window.removeEventListener('storage', handleStorage);
+      try {
+        if (bc) bc.close();
+      } catch {
+        // Ignore
+      }
     };
   }, []);
 
-  // Persist & broadcast vendor updates
   const persistVendors = (nextVendors) => {
     setVendors(nextVendors);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(nextVendors));
-    if (typeof BroadcastChannel !== 'undefined') {
-      const bc = new BroadcastChannel(CHANNEL_NAME);
-      bc.postMessage({ type: 'SYNC_VENDORS', payload: nextVendors });
-      bc.close();
+    safeStorage.set(STORAGE_KEY, nextVendors);
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new window.BroadcastChannel(CHANNEL_NAME);
+        bc.postMessage({ type: 'SYNC_VENDORS', payload: nextVendors });
+        bc.close();
+      }
+    } catch {
+      // Ignore
     }
   };
 
-  const updateVendorInDB = async (vendorId, patch) => {
+  const updateVendorInDB = (vendorId, patch) => {
     const updated = vendors.map((v) => (v.id === vendorId ? { ...v, ...patch } : v));
     persistVendors(updated);
+  };
+
+  const updateSession = (nextSession) => {
+    setSession(nextSession);
+    if (nextSession) {
+      safeStorage.set(SESSION_KEY, nextSession);
+    } else {
+      safeStorage.remove(SESSION_KEY);
+    }
   };
 
   const selectedVendor = useMemo(
@@ -332,13 +366,14 @@ export default function App() {
   );
   const foundingSlotsRemaining = Math.max(0, 10 - foundingStallsCount);
 
-  // Processed, Filtered & Sorted Vendors
+  // Filtered Vendors for Customer Mode
   const processedVendors = useMemo(() => {
+    const isSavedTab = activeTab === 'saved';
     const processed = vendors
       .filter((v) => {
-        if (selectedCategory !== 'All' && v.category !== selectedCategory) return false;
-        if (vegOnlyFilter && !v.isVeg) return false;
-        if (favoritesOnlyFilter && !followedVendorIds.includes(v.id)) return false;
+        if (isSavedTab && !followedVendorIds.includes(v.id)) return false;
+        if (!isSavedTab && selectedCategory !== 'All' && v.category !== selectedCategory) return false;
+        if (!isSavedTab && vegOnlyFilter && !v.isVeg) return false;
 
         if (searchQuery.trim() !== '') {
           const q = searchQuery.toLowerCase();
@@ -372,9 +407,9 @@ export default function App() {
     return processed;
   }, [
     vendors,
+    activeTab,
     selectedCategory,
     vegOnlyFilter,
-    favoritesOnlyFilter,
     followedVendorIds,
     searchQuery,
     userLocation,
@@ -382,7 +417,6 @@ export default function App() {
     nowMs
   ]);
 
-  // All active offers
   const allOffers = useMemo(() => {
     const list = [];
     vendors.forEach((v) => {
@@ -394,33 +428,118 @@ export default function App() {
   }, [vendors]);
 
   // Customer Login Handler
-  const handleCustomerAuthSubmit = (e) => {
+  const handleCustomerLogin = (e) => {
     e.preventDefault();
     if (!authInput.trim()) return;
-    const authData = { contact: authInput.trim(), loggedInAt: Date.now() };
-    setCustomerAuth(authData);
-    localStorage.setItem('khaozi_customer_auth', JSON.stringify(authData));
-    setShowAuthModal(false);
+    const newSession = { role: 'customer', contact: authInput.trim(), loggedInAt: Date.now() };
+    updateSession(newSession);
+    setActiveTab('discover');
+    setShowRoleModal(false);
     setAuthInput('');
-    showToast(lang === 'HI' ? 'लॉगिन सफल! अब आप लाइव GPS देख सकते हैं' : 'Logged in! GPS & Directions unlocked', 'success');
+    showToast(
+      lang === 'HI'
+        ? 'ग्राहक मोड चालू! अब आप लाइव दूरी और रास्ता देख सकते हैं'
+        : 'Logged in as Customer! Live GPS & Directions unlocked',
+      'success'
+    );
 
     if (pendingDirectionVendor) {
       const target = pendingDirectionVendor;
       setPendingDirectionVendor(null);
-      const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}`;
-      window.open(mapsUrl, '_blank', 'noopener,noreferrer');
+      window.open(
+        `https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}`,
+        '_blank',
+        'noopener,noreferrer'
+      );
     }
   };
 
-  // Trigger Browser Geolocation
+  // Vendor Existing Stall Login Handler
+  const handleVendorPhoneLogin = (e) => {
+    e.preventDefault();
+    const cleaned = vendorLoginPhone.trim();
+    if (!cleaned) return;
+    const found =
+      vendors.find((v) => v.phone.includes(cleaned)) || vendors[0];
+    setManagingVendorId(found.id);
+    updateSession({
+      role: 'vendor',
+      contact: found.ownerName,
+      vendorId: found.id,
+      stallName: found.name
+    });
+    setActiveTab('vendor_gps');
+    setShowRoleModal(false);
+    setVendorLoginPhone('');
+    showToast(`Welcome back, ${found.ownerName}! Switched to Vendor Console.`, 'success');
+  };
+
+  // Register New Stall -> Automatically activates Vendor Mode & Vendor Menus
+  const handleRegisterStall = (e) => {
+    e.preventDefault();
+    if (!regForm.name.trim() || !regForm.ownerName.trim() || !regForm.landmark.trim()) return;
+
+    const isFounder = foundingSlotsRemaining > 0;
+    const newStallId = `v_${Date.now()}`;
+    const newStall = {
+      id: newStallId,
+      name: regForm.name.trim(),
+      ownerName: regForm.ownerName.trim(),
+      phone: regForm.phone.trim() || '9876500000',
+      category: regForm.category,
+      landmark: regForm.landmark.trim(),
+      lat: 26.89 + (Math.random() - 0.5) * 0.03,
+      lng: 75.81 + (Math.random() - 0.5) * 0.03,
+      isVeg: regForm.isVeg,
+      rating: 5.0,
+      followersCount: 1,
+      crowdStatus: 'No Wait',
+      stallOpenStatus: 'Here Now',
+      planType: isFounder ? 'FOUNDER_10' : 'REGULAR_399',
+      subscriptionStatus: 'trial_active',
+      lastLocationUpdatedAt: Date.now(),
+      profileViews: 1,
+      directionRequests: 0,
+      menu: [{ name: `Special ${regForm.category}`, price: 50 }],
+      offers: []
+    };
+
+    persistVendors([newStall, ...vendors]);
+    setManagingVendorId(newStallId);
+    updateSession({
+      role: 'vendor',
+      contact: newStall.ownerName,
+      vendorId: newStallId,
+      stallName: newStall.name
+    });
+    setRegForm({ name: '', ownerName: '', phone: '', category: 'Golgappe / Pani Puri', landmark: '', isVeg: true });
+    setShowRoleModal(false);
+    setActiveTab('vendor_gps');
+    showToast(
+      isFounder
+        ? '🎉 Stall Registered! Vendor Console unlocked (3 Months FREE)'
+        : '✅ Stall Registered! Switched to Vendor Console',
+      'success'
+    );
+  };
+
+  const handleLogout = () => {
+    updateSession(null);
+    setActiveTab('discover');
+    setShowRoleModal(false);
+    showToast('Switched back to Guest Customer View', 'info');
+  };
+
+  // Customer Geolocation
   const getUserLiveLocation = () => {
-    if (!customerAuth) {
-      setShowAuthModal(true);
+    if (!session) {
+      setRoleModalView('customer_login');
+      setShowRoleModal(true);
       return;
     }
     if (!navigator.geolocation) {
       setUserLocation({ lat: 26.8982, lng: 75.8295 });
-      showToast(lang === 'HI' ? 'मार्केट सेंटर लोकेशन सेट की गई' : 'Using bazaar center location', 'info');
+      showToast('Using bazaar center location', 'info');
       return;
     }
     setIsLocatingUser(true);
@@ -433,97 +552,48 @@ export default function App() {
       () => {
         setUserLocation({ lat: 26.8982, lng: 75.8295 });
         setIsLocatingUser(false);
-        showToast(lang === 'HI' ? 'डिफ़ॉल्ट मार्केट लोकेशन सेट की गई' : 'Using default bazaar center location', 'info');
+        showToast('Using default bazaar center location', 'info');
       },
       { enableHighAccuracy: true, timeout: 6000 }
     );
   };
 
-  // Select Vendor & Increment Profile Views
   const handleSelectVendor = (vendor) => {
     setSelectedVendorId(vendor.id);
     updateVendorInDB(vendor.id, { profileViews: (vendor.profileViews || 0) + 1 });
   };
 
-  // Get Directions (with Customer Auth Gate)
   const handleGetDirections = (vendor) => {
-    if (!customerAuth) {
+    if (!session) {
       setPendingDirectionVendor(vendor);
-      setShowAuthModal(true);
+      setRoleModalView('customer_login');
+      setShowRoleModal(true);
       return;
     }
     updateVendorInDB(vendor.id, { directionRequests: (vendor.directionRequests || 0) + 1 });
-    const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${vendor.lat},${vendor.lng}`;
-    window.open(mapsUrl, '_blank', 'noopener,noreferrer');
+    window.open(
+      `https://www.google.com/maps/dir/?api=1&destination=${vendor.lat},${vendor.lng}`,
+      '_blank',
+      'noopener,noreferrer'
+    );
   };
 
-  // Share Stall Location via WhatsApp / Web Share API
   const handleShareStall = (vendor, e) => {
     if (e) e.stopPropagation();
     const topDish = vendor.menu?.[0] ? `${vendor.menu[0].name} (₹${vendor.menu[0].price})` : vendor.category;
     const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${vendor.lat},${vendor.lng}`;
-    const shareText =
-      lang === 'HI'
-        ? `🔥 भाई *${vendor.name}* अभी *${vendor.landmark}* पर लगा है!\nखास: ${topDish}\nरास्ता देखें: ${mapsUrl}\n— KHAOZI Live Street Food`
-        : `🔥 *${vendor.name}* is LIVE right now at *${vendor.landmark}*!\nMust try: ${topDish}\nDirections: ${mapsUrl}\n— Discovered on KHAOZI`;
-
-    if (navigator.share) {
-      navigator.share({ title: vendor.name, text: shareText }).catch(() => {});
-    } else {
-      const waUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
-      window.open(waUrl, '_blank', 'noopener,noreferrer');
-    }
-    showToast(lang === 'HI' ? 'WhatsApp पर शेयर करने के लिए तैयार!' : 'Opening WhatsApp share...', 'success');
+    const shareText = `🔥 *${vendor.name}* is LIVE right now at *${vendor.landmark}*!\nMust try: ${topDish}\nDirections: ${mapsUrl}\n— Discovered on KHAOZI`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, '_blank', 'noopener,noreferrer');
+    showToast('Opening WhatsApp share...', 'success');
   };
 
-  // Register New Stall
-  const handleRegisterStall = (e) => {
-    e.preventDefault();
-    if (!regForm.name.trim() || !regForm.ownerName.trim() || !regForm.landmark.trim()) return;
-
-    const isFounder = foundingSlotsRemaining > 0;
-    const newStall = {
-      id: `v_${Date.now()}`,
-      name: regForm.name.trim(),
-      ownerName: regForm.ownerName.trim(),
-      phone: regForm.phone.trim(),
-      category: regForm.category,
-      landmark: regForm.landmark.trim(),
-      lat: 26.89 + (Math.random() - 0.5) * 0.03,
-      lng: 75.81 + (Math.random() - 0.5) * 0.03,
-      isVeg: regForm.isVeg,
-      rating: 5.0,
-      followersCount: 1,
-      crowdStatus: 'No Wait',
-      planType: isFounder ? 'FOUNDER_10' : 'REGULAR_399',
-      subscriptionStatus: 'trial_active',
-      lastLocationUpdatedAt: Date.now(),
-      profileViews: 1,
-      directionRequests: 0,
-      menu: [{ name: `Special ${regForm.category}`, price: 50 }],
-      offers: []
-    };
-
-    persistVendors([newStall, ...vendors]);
-    setManagingVendorId(newStall.id);
-    setRegForm({ name: '', ownerName: '', phone: '', category: 'Golgappe / Pani Puri', landmark: '', isVeg: true });
-    setActiveTab('vendor');
-    showToast(
-      isFounder
-        ? '🎉 Congratulations! Founding Stall Slot unlocked (3 Months FREE)!'
-        : '✅ Stall Registered Live on KHAOZI!',
-      'success'
-    );
-  };
-
-  // Vendor "I'M HERE" GPS Broadcast
+  // Vendor Console Actions
   const handleVendorImHereBroadcast = (vendor) => {
     if (!vendor) return;
     if (vendor.subscriptionStatus === 'expired') {
       showToast('Subscription expired! Renew ₹399/mo to broadcast live GPS.', 'error');
       return;
     }
-
     setIsBroadcastingGps(true);
     const nextLandmark = vendorLandmarkInput.trim() || vendor.landmark;
 
@@ -532,11 +602,12 @@ export default function App() {
         lat,
         lng,
         landmark: nextLandmark,
+        stallOpenStatus: 'Here Now',
         lastLocationUpdatedAt: Date.now()
       });
       setVendorLandmarkInput('');
       setIsBroadcastingGps(false);
-      showToast(lang === 'HI' ? '📍 लाइव लोकेशन पब्लिश हो गई!' : '📍 Live GPS Location Broadcasted!', 'success');
+      showToast('📍 Live GPS Location Broadcasted to nearby foodies!', 'success');
     };
 
     if (navigator.geolocation) {
@@ -550,40 +621,42 @@ export default function App() {
     }
   };
 
-  // Update Crowd / Rush Meter Status
-  const handleUpdateCrowdStatus = async (statusLevel) => {
+  const handleUpdateCrowdStatus = (statusLevel) => {
     if (!managingVendor) return;
-    await updateVendorInDB(managingVendor.id, { crowdStatus: statusLevel });
-    showToast(
-      lang === 'HI' ? `भीड़ स्टेटस अपडेट हो गया: ${statusLevel}` : `Crowd status updated: ${statusLevel}`,
-      'success'
-    );
+    updateVendorInDB(managingVendor.id, { crowdStatus: statusLevel });
+    showToast(`Crowd status updated: ${statusLevel}`, 'success');
   };
 
-  // Add Menu Item in Vendor Dashboard
-  const handleAddMenuItem = async (e) => {
+  const handleUpdateStallStatus = (openStatus) => {
+    if (!managingVendor) return;
+    updateVendorInDB(managingVendor.id, {
+      stallOpenStatus: openStatus,
+      lastLocationUpdatedAt: Date.now()
+    });
+    showToast(`Stall status set to: ${openStatus}`, 'success');
+  };
+
+  const handleAddMenuItem = (e) => {
     e.preventDefault();
     if (!managingVendor || !newMenuItemName.trim() || !newMenuItemPrice) return;
     const updatedMenu = [
       ...(managingVendor.menu || []),
       { name: newMenuItemName.trim(), price: Number(newMenuItemPrice) }
     ];
-    await updateVendorInDB(managingVendor.id, { menu: updatedMenu });
+    updateVendorInDB(managingVendor.id, { menu: updatedMenu });
     setNewMenuItemName('');
     setNewMenuItemPrice('');
-    showToast(lang === 'HI' ? 'मेनू में नई डिश जुड़ गई!' : 'New dish added to live menu!', 'success');
+    showToast('New dish added to live menu!', 'success');
   };
 
-  // Remove Menu Item
-  const handleRemoveMenuItem = async (indexToRemove) => {
+  const handleRemoveMenuItem = (indexToRemove) => {
     if (!managingVendor) return;
     const updatedMenu = (managingVendor.menu || []).filter((_, idx) => idx !== indexToRemove);
-    await updateVendorInDB(managingVendor.id, { menu: updatedMenu });
-    showToast(lang === 'HI' ? 'डिश हटा दी गई' : 'Menu item removed', 'info');
+    updateVendorInDB(managingVendor.id, { menu: updatedMenu });
+    showToast('Menu item removed', 'info');
   };
 
-  // Publish New Offer in Vendor Dashboard
-  const handlePublishOffer = async (e) => {
+  const handlePublishOffer = (e) => {
     e.preventDefault();
     if (!managingVendor || !newOfferTitle.trim() || !newOfferDiscount.trim()) return;
     const newOfferObj = {
@@ -594,15 +667,14 @@ export default function App() {
       description: newOfferDesc.trim() || 'Limited time live stall special offer!'
     };
     const updatedOffers = [newOfferObj, ...(managingVendor.offers || [])];
-    await updateVendorInDB(managingVendor.id, { offers: updatedOffers });
+    updateVendorInDB(managingVendor.id, { offers: updatedOffers });
     setNewOfferTitle('');
     setNewOfferDiscount('');
     setNewOfferCode('');
     setNewOfferDesc('');
-    showToast(lang === 'HI' ? 'नया ऑफर लाइव हो गया!' : 'New offer published live!', 'success');
+    showToast('New offer published live!', 'success');
   };
 
-  // Toggle Follow / Favorite Vendor
   const toggleFollowVendor = (vendorId, e) => {
     if (e) e.stopPropagation();
     const isFollowing = followedVendorIds.includes(vendorId);
@@ -610,24 +682,41 @@ export default function App() {
       ? followedVendorIds.filter((id) => id !== vendorId)
       : [...followedVendorIds, vendorId];
     setFollowedVendorIds(updated);
-    localStorage.setItem('khaozi_follows', JSON.stringify(updated));
+    safeStorage.set(FOLLOWS_KEY, updated);
 
     const targetVendor = vendors.find((v) => v.id === vendorId);
     if (targetVendor) {
       const nextFollowers = Math.max(0, (targetVendor.followersCount || 0) + (isFollowing ? -1 : 1));
       updateVendorInDB(vendorId, { followersCount: nextFollowers });
     }
-    showToast(
-      isFollowing
-        ? lang === 'HI'
-          ? 'पसंदीदा से हटाया गया'
-          : 'Removed from saved stalls'
-        : lang === 'HI'
-        ? 'पसंदीदा में सेव किया गया! लाइव अलर्ट चालू'
-        : 'Saved! You will see live updates',
-      'info'
-    );
+    showToast(isFollowing ? 'Removed from Saved Stalls' : 'Saved! Live location alerts active', 'info');
   };
+
+  // ==========================================================================
+  // ROLE-SPECIFIC NAVIGATION ITEMS (DIFFERENT MENUS FOR CUSTOMER VS VENDOR)
+  // ==========================================================================
+  const navItems = useMemo(() => {
+    if (currentRole === 'vendor') {
+      return [
+        { id: 'vendor_gps', icon: Radio, label: t('liveBroadcast') },
+        { id: 'vendor_menu', icon: Utensils, label: t('menuOffers') },
+        { id: 'vendor_stats', icon: BarChart3, label: t('analyticsPlan') },
+        { id: 'discover', icon: Eye, label: t('customerPreview') }
+      ];
+    }
+    if (currentRole === 'admin') {
+      return [
+        { id: 'admin', icon: Shield, label: 'Subscriptions & Reports' },
+        { id: 'discover', icon: Compass, label: 'Live Stalls View' }
+      ];
+    }
+    // Customer Mode Navigation
+    return [
+      { id: 'discover', icon: Compass, label: t('discover') },
+      { id: 'offers', icon: Tag, label: t('offers') },
+      { id: 'saved', icon: Heart, label: `${t('saved')} (${followedVendorIds.length})` }
+    ];
+  }, [currentRole, lang, followedVendorIds.length]);
 
   return (
     <div className="min-h-screen bg-[#FFFDF7] text-slate-900 font-sans selection:bg-amber-300">
@@ -645,7 +734,7 @@ export default function App() {
         </div>
       )}
 
-      {/* VIEWPORT CONTAINER (DESKTOP OR MOBILE PHONE PREVIEW) */}
+      {/* VIEWPORT CONTAINER */}
       <div
         className={
           isMobileFrame
@@ -654,55 +743,89 @@ export default function App() {
         }
       >
         <div>
-          {/* TOP ANNOUNCEMENT BAR */}
-          <div className="bg-[#F4A900] text-[#2B1B17] text-[11px] sm:text-xs font-black py-1.5 px-3 text-center border-b border-[#2B1B17]/20">
-            {lang === 'HI'
-              ? '🎉 पहले 10 स्टॉल्स के लिए 3 महीने बिल्कुल FREE! उसके बाद सिर्फ ₹399/महीना'
-              : '🎉 Founding Offer: First 10 Stalls get 3 Months FREE! ₹399/mo thereafter'}
-          </div>
+          {/* ROLE-AWARE TOP ANNOUNCEMENT BAR */}
+          {currentRole === 'vendor' ? (
+            <div className="bg-[#2B1B17] text-amber-300 text-[11px] sm:text-xs font-black py-1.5 px-3 text-center border-b border-amber-400/30">
+              🛒 VENDOR BUSINESS CONSOLE • Managing: {managingVendor?.name}
+            </div>
+          ) : (
+            <div className="bg-[#F4A900] text-[#2B1B17] text-[11px] sm:text-xs font-black py-1.5 px-3 text-center border-b border-[#2B1B17]/20">
+              {lang === 'HI'
+                ? '🎉 पहले 10 स्टॉल्स के लिए 3 महीने बिल्कुल FREE! उसके बाद सिर्फ ₹399/महीना'
+                : '🎉 Founding Offer: First 10 Stalls get 3 Months FREE! ₹399/mo thereafter'}
+            </div>
+          )}
 
           {/* MAIN HEADER */}
-          <header className="sticky top-0 z-30 bg-[#FFF8EB]/95 backdrop-blur-md border-b-2 border-[#2B1B17] px-3 sm:px-6 py-3">
+          <header
+            className={`sticky top-0 z-30 backdrop-blur-md border-b-2 px-3 sm:px-6 py-3 ${
+              currentRole === 'vendor'
+                ? 'bg-slate-950 text-white border-amber-400'
+                : 'bg-[#FFF8EB]/95 text-[#2B1B17] border-[#2B1B17]'
+            }`}
+          >
             <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 cursor-pointer" onClick={() => setActiveTab('discover')}>
-                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-[#D9381E] border-2 border-[#2B1B17] flex items-center justify-center text-amber-300 font-black text-lg shadow">
+              <div
+                className="flex items-center gap-2 cursor-pointer"
+                onClick={() => setActiveTab(currentRole === 'vendor' ? 'vendor_gps' : 'discover')}
+              >
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-[#D9381E] border-2 border-amber-400 flex items-center justify-center text-amber-300 font-black text-lg shadow">
                   K
                 </div>
                 <div>
-                  <h1 className="text-lg sm:text-xl font-black tracking-tight text-[#2B1B17] leading-none">
-                    KHAOZI
-                  </h1>
+                  <div className="flex items-center gap-1.5">
+                    <h1 className="text-lg sm:text-xl font-black tracking-tight leading-none">KHAOZI</h1>
+                    <span
+                      className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase ${
+                        currentRole === 'vendor'
+                          ? 'bg-amber-400 text-slate-950'
+                          : 'bg-emerald-600 text-white'
+                      }`}
+                    >
+                      {currentRole === 'vendor' ? 'VENDOR' : currentRole === 'admin' ? 'ADMIN' : 'FOODIE'}
+                    </span>
+                  </div>
                   <p className="text-[10px] font-bold text-[#D9381E] tracking-wide">
-                    {lang === 'HI' ? 'लाइव स्ट्रीट फूड' : 'LIVE STREET FOOD'}
+                    {currentRole === 'vendor' ? 'STALL OWNER PORTAL' : 'LIVE STREET FOOD'}
                   </p>
                 </div>
               </div>
 
-              {/* DESKTOP TABS */}
+              {/* DESKTOP ROLE-SPECIFIC TABS */}
               {!isMobileFrame && (
-                <nav className="hidden md:flex items-center gap-1.5 bg-amber-100/80 p-1 rounded-2xl border border-amber-300">
-                  {[
-                    { id: 'discover', label: t('discover') },
-                    { id: 'offers', label: t('offers') },
-                    { id: 'vendor', label: t('vendorHub') },
-                    { id: 'admin', label: t('admin') }
-                  ].map((tab) => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveTab(tab.id)}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all ${
-                        activeTab === tab.id
-                          ? 'bg-[#2B1B17] text-amber-300 shadow'
-                          : 'text-slate-700 hover:bg-amber-200/60'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
+                <nav
+                  className={`hidden md:flex items-center gap-1.5 p-1 rounded-2xl border ${
+                    currentRole === 'vendor'
+                      ? 'bg-slate-900 border-slate-700'
+                      : 'bg-amber-100/80 border-amber-300'
+                  }`}
+                >
+                  {navItems.map((tab) => {
+                    const IconComp = tab.icon;
+                    const isActive = activeTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        onClick={() => setActiveTab(tab.id)}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all ${
+                          isActive
+                            ? currentRole === 'vendor'
+                              ? 'bg-amber-400 text-slate-950 shadow'
+                              : 'bg-[#2B1B17] text-amber-300 shadow'
+                            : currentRole === 'vendor'
+                            ? 'text-slate-300 hover:bg-slate-800'
+                            : 'text-slate-700 hover:bg-amber-200/60'
+                        }`}
+                      >
+                        <IconComp className="w-3.5 h-3.5" />
+                        <span>{tab.label}</span>
+                      </button>
+                    );
+                  })}
                 </nav>
               )}
 
-              {/* RIGHT CONTROLS: LANG + REGISTER/LOGIN */}
+              {/* RIGHT CONTROLS: LANG + ACCOUNT / ROLE SWITCHER */}
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <button
                   onClick={() => setLang(lang === 'EN' ? 'HI' : 'EN')}
@@ -712,16 +835,19 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={() => setShowRoleModal(true)}
-                  className="bg-[#D9381E] hover:bg-red-700 text-white border-2 border-[#2B1B17] px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-black shadow flex items-center gap-1"
+                  onClick={() => {
+                    setRoleModalView('choose');
+                    setShowRoleModal(true);
+                  }}
+                  className="bg-[#D9381E] hover:bg-red-700 text-white border-2 border-amber-300 px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-black shadow flex items-center gap-1.5"
                 >
                   <Store className="w-3.5 h-3.5 text-amber-300" />
                   <span>
-                    {customerAuth
-                      ? customerAuth.contact
+                    {session
+                      ? `${session.contact} ▾`
                       : lang === 'HI'
-                      ? 'स्टॉल रजिस्टर / लॉगिन'
-                      : 'Register Stall / Login'}
+                      ? 'लॉगिन / स्टॉल जोड़ें'
+                      : 'Login / Register Stall'}
                   </span>
                 </button>
               </div>
@@ -731,131 +857,417 @@ export default function App() {
           {/* MAIN CONTENT BODY */}
           <main className="max-w-7xl mx-auto px-3 sm:px-6 py-5 pb-24">
             {/* ======================================================== */}
-            {/* TAB 1: DISCOVER / LIVE STREET STALLS                     */}
+            {/* VENDOR CONSOLE TAB 1: LIVE GPS & RUSH CONTROL            */}
             {/* ======================================================== */}
-            {activeTab === 'discover' && (
-              <div className="space-y-4">
-                {/* HERO BANNER & SEARCH */}
-                <div className="bg-gradient-to-br from-[#2B1B17] via-[#4A2511] to-[#D9381E] rounded-3xl p-4 sm:p-6 text-white shadow-xl border-2 border-amber-400/40 relative overflow-hidden">
-                  <div className="relative z-10 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="bg-amber-400 text-slate-950 text-[10px] sm:text-xs font-black px-3 py-1 rounded-full uppercase tracking-wider">
-                        {lang === 'HI' ? '● लाइव स्ट्रीट फूड रडार' : '● LIVE STREET FOOD RADAR'}
-                      </span>
+            {currentRole === 'vendor' && activeTab === 'vendor_gps' && managingVendor && (
+              <div className="space-y-5">
+                {/* VENDOR STALL HEADER CARD */}
+                <div className="bg-white p-4 sm:p-5 rounded-3xl border-2 border-slate-900 shadow-sm flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <span className="text-[11px] font-black text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-full">
+                      {managingVendor.planType === 'FOUNDER_10'
+                        ? '🎉 Founding Stall • 3 Months FREE'
+                        : '💼 Standard Plan • ₹399/mo'}
+                    </span>
+                    <h2 className="text-lg sm:text-xl font-black text-slate-900 mt-1">
+                      {managingVendor.name}
+                    </h2>
+                    <p className="text-xs text-slate-500 font-semibold">
+                      Owner: {managingVendor.ownerName} • {managingVendor.category}
+                    </p>
+                  </div>
+
+                  {/* STALL OPEN / MOVING / CLOSED TOGGLE */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {['Here Now', 'Moving Soon', 'Closed Today'].map((st) => (
                       <button
-                        onClick={getUserLiveLocation}
-                        disabled={isLocatingUser}
-                        className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-md transition-all"
+                        key={st}
+                        onClick={() => handleUpdateStallStatus(st)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-black border-2 transition-all ${
+                          (managingVendor.stallOpenStatus || 'Here Now') === st
+                            ? st === 'Closed Today'
+                              ? 'bg-red-600 text-white border-red-800'
+                              : 'bg-emerald-600 text-white border-emerald-800'
+                            : 'bg-slate-100 text-slate-700 border-slate-200'
+                        }`}
                       >
-                        <Crosshair className={`w-3.5 h-3.5 ${isLocatingUser ? 'animate-spin' : ''}`} />
-                        <span>
-                          {userLocation ? (lang === 'HI' ? 'लोकेशन एक्टिव' : 'GPS Active') : t('useMyLocation')}
-                        </span>
+                        {st}
                       </button>
-                    </div>
+                    ))}
+                  </div>
+                </div>
 
-                    <div>
-                      <h2 className="text-xl sm:text-3xl font-black tracking-tight text-amber-300">
-                        {t('heroTitle')}
-                      </h2>
-                      <p className="text-xs sm:text-sm text-amber-100/90 mt-0.5">{t('heroSubtitle')}</p>
-                    </div>
+                {/* GIANT "I'M HERE NOW" GPS BROADCAST */}
+                <div className="bg-gradient-to-br from-[#2B1B17] via-[#4A2511] to-[#D9381E] p-6 rounded-3xl text-white border-2 border-amber-400 shadow-xl space-y-4">
+                  <div>
+                    <span className="bg-amber-400 text-slate-950 text-[10px] font-black px-3 py-1 rounded-full uppercase">
+                      LIVE GPS TRANSMITTER
+                    </span>
+                    <h3 className="text-xl sm:text-2xl font-black text-amber-300 mt-2">
+                      {lang === 'HI' ? 'ग्राहकों को अपनी लाइव जगह बताएं' : 'Broadcast Your Exact Cart Location'}
+                    </h3>
+                    <p className="text-xs text-amber-100/90 mt-1">
+                      Current Pin: <strong>{managingVendor.landmark}</strong> (
+                      {formatFreshness(managingVendor.lastLocationUpdatedAt, nowMs).text})
+                    </p>
+                  </div>
 
-                    {/* SEARCH BAR + QUICK FILTER TOGGLES */}
-                    <div className="flex flex-col sm:flex-row gap-2 pt-1">
-                      <div className="relative flex-1">
-                        <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                        <input
-                          type="text"
-                          value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
-                          placeholder={t('searchPlaceholder')}
-                          className="w-full pl-10 pr-4 py-2.5 rounded-2xl bg-white text-slate-900 placeholder-slate-400 text-xs sm:text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-400"
-                        />
-                      </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      placeholder="Update chowk / gate note (e.g. Metro Gate 2 ke bahar)"
+                      value={vendorLandmarkInput}
+                      onChange={(e) => setVendorLandmarkInput(e.target.value)}
+                      className="flex-1 px-4 py-3.5 rounded-2xl bg-white text-slate-900 text-xs font-bold outline-none"
+                    />
+                    <button
+                      onClick={() => handleVendorImHereBroadcast(managingVendor)}
+                      disabled={isBroadcastingGps}
+                      className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black px-6 py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-transform"
+                    >
+                      <Radio className={`w-4 h-4 ${isBroadcastingGps ? 'animate-spin' : ''}`} />
+                      <span>{lang === 'HI' ? 'मैं यहीं हूँ (I’M HERE)' : 'I’M HERE NOW'}</span>
+                    </button>
+                  </div>
+                </div>
 
-                      <div className="flex gap-2 justify-between sm:justify-start">
+                {/* LIVE CROWD / RUSH STATUS */}
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-black text-sm sm:text-base text-slate-900 flex items-center gap-2">
+                      <Users className="w-4 h-4 text-[#D9381E]" />
+                      <span>{lang === 'HI' ? 'अभी स्टॉल पर भीड़ कैसी है?' : 'Live Crowd / Rush Meter'}</span>
+                    </h3>
+                    <span className="text-xs font-bold text-slate-500">
+                      Active: {managingVendor.crowdStatus || 'No Wait'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { label: 'No Wait', hi: 'खाली है (0 min)' },
+                      { label: 'Thodi Bheed', hi: 'थोड़ी भीड़ (5 min)' },
+                      { label: 'Full Rush', hi: 'फुल भीड़ (15 min)' }
+                    ].map((item) => {
+                      const active = (managingVendor.crowdStatus || 'No Wait') === item.label;
+                      return (
                         <button
-                          onClick={() => setVegOnlyFilter(!vegOnlyFilter)}
-                          className={`px-3 py-2.5 rounded-2xl text-xs font-black flex items-center gap-1.5 border transition-all ${
-                            vegOnlyFilter
-                              ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg'
-                              : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
+                          key={item.label}
+                          onClick={() => handleUpdateCrowdStatus(item.label)}
+                          className={`py-3 px-2 rounded-2xl text-xs font-black border-2 transition-all ${
+                            active
+                              ? 'bg-[#2B1B17] text-amber-300 border-amber-400 shadow'
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-amber-300'
                           }`}
                         >
-                          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                          <span>{t('pureVeg')}</span>
+                          {lang === 'HI' ? item.hi : item.label}
                         </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
 
+            {/* ======================================================== */}
+            {/* VENDOR CONSOLE TAB 2: MENU & OFFERS MANAGER              */}
+            {/* ======================================================== */}
+            {currentRole === 'vendor' && activeTab === 'vendor_menu' && managingVendor && (
+              <div className={isMobileFrame ? 'grid grid-cols-1 gap-4' : 'grid grid-cols-1 lg:grid-cols-2 gap-6'}>
+                {/* MENU MANAGER */}
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
+                  <h3 className="font-black text-base text-slate-900 flex items-center gap-2">
+                    <Utensils className="w-4 h-4 text-[#D9381E]" />
+                    <span>{lang === 'HI' ? 'मेनू और रेट अपडेट करें' : 'Manage Live Menu & ₹ Pricing'}</span>
+                  </h3>
+                  <form onSubmit={handleAddMenuItem} className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Dish name (e.g. Paneer Momos)"
+                      value={newMenuItemName}
+                      onChange={(e) => setNewMenuItemName(e.target.value)}
+                      className="flex-1 p-2.5 border border-slate-300 rounded-xl text-xs outline-none focus:border-amber-500"
+                    />
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      placeholder="₹ Price"
+                      value={newMenuItemPrice}
+                      onChange={(e) => setNewMenuItemPrice(e.target.value)}
+                      className="w-24 p-2.5 border border-slate-300 rounded-xl text-xs outline-none focus:border-amber-500"
+                    />
+                    <button type="submit" className="bg-[#2B1B17] text-amber-300 font-black px-3.5 rounded-xl text-xs">
+                      + Add
+                    </button>
+                  </form>
+                  <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                    {(managingVendor.menu || []).map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between bg-amber-50/70 px-3 py-2.5 rounded-xl border border-amber-100 text-xs"
+                      >
+                        <span className="font-bold text-slate-800">{item.name}</span>
+                        <div className="flex items-center gap-3">
+                          <span className="font-black text-[#D9381E]">₹{item.price}</span>
+                          <button
+                            onClick={() => handleRemoveMenuItem(idx)}
+                            className="text-slate-400 hover:text-red-600"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* OFFERS PUBLISHER */}
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
+                  <h3 className="font-black text-base text-slate-900 flex items-center gap-2">
+                    <Tag className="w-4 h-4 text-[#D9381E]" />
+                    <span>{lang === 'HI' ? 'नया ऑफर पब्लिश करें' : 'Publish Live Stall Offer'}</span>
+                  </h3>
+                  <form onSubmit={handlePublishOffer} className="space-y-2.5 text-xs">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        required
+                        placeholder="Offer Title (e.g. Evening Chai Combo)"
+                        value={newOfferTitle}
+                        onChange={(e) => setNewOfferTitle(e.target.value)}
+                        className="flex-1 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
+                      />
+                      <input
+                        type="text"
+                        required
+                        placeholder="20% OFF / ₹10 OFF"
+                        value={newOfferDiscount}
+                        onChange={(e) => setNewOfferDiscount(e.target.value)}
+                        className="w-28 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Code (e.g. CHAI20)"
+                        value={newOfferCode}
+                        onChange={(e) => setNewOfferCode(e.target.value)}
+                        className="w-32 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500 uppercase"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Short details..."
+                        value={newOfferDesc}
+                        onChange={(e) => setNewOfferDesc(e.target.value)}
+                        className="flex-1 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full bg-[#D9381E] hover:bg-red-700 text-white font-black py-3 rounded-xl shadow"
+                    >
+                      {lang === 'HI' ? 'ऑफर लाइव करें' : 'Publish Offer Live'}
+                    </button>
+                  </form>
+
+                  {/* ACTIVE VENDOR OFFERS */}
+                  <div className="space-y-2 pt-2">
+                    {(managingVendor.offers || []).map((o) => (
+                      <div key={o.id} className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs flex justify-between items-center">
+                        <div>
+                          <p className="font-black text-slate-900">{o.title}</p>
+                          <p className="text-slate-600">{o.discount} • Code: {o.code}</p>
+                        </div>
+                        <span className="text-[10px] font-black bg-emerald-600 text-white px-2 py-0.5 rounded-full">LIVE</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ======================================================== */}
+            {/* VENDOR CONSOLE TAB 3: ANALYTICS & SUBSCRIPTION PLAN      */}
+            {/* ======================================================== */}
+            {currentRole === 'vendor' && activeTab === 'vendor_stats' && managingVendor && (
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                    <p className="text-xs font-bold text-slate-500">Total Profile Views</p>
+                    <p className="text-3xl font-black text-slate-900 mt-1">{managingVendor.profileViews || 0}</p>
+                    <p className="text-[11px] font-bold text-emerald-600 mt-1">+18% this week</p>
+                  </div>
+                  <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                    <p className="text-xs font-bold text-slate-500">Directions Requested (Raasta Dekho)</p>
+                    <p className="text-3xl font-black text-[#D9381E] mt-1">{managingVendor.directionRequests || 0}</p>
+                    <p className="text-[11px] font-bold text-slate-500 mt-1">High-intent nearby foodies</p>
+                  </div>
+                  <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                    <p className="text-xs font-bold text-slate-500">Loyal Followers</p>
+                    <p className="text-3xl font-black text-amber-600 mt-1">{managingVendor.followersCount || 0}</p>
+                    <p className="text-[11px] font-bold text-slate-500 mt-1">Notified when you go live</p>
+                  </div>
+                </div>
+
+                <div className="bg-[#2B1B17] text-white p-6 rounded-3xl border-2 border-amber-400 flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <span className="bg-emerald-500 text-slate-950 text-[10px] font-black px-3 py-1 rounded-full">
+                      ACTIVE SUBSCRIPTION
+                    </span>
+                    <h3 className="text-xl font-black text-amber-300 mt-2">
+                      {managingVendor.planType === 'FOUNDER_10'
+                        ? 'Founding Stall Plan — 3 Months FREE (₹0)'
+                        : 'Standard Vendor Plan — ₹399 / Month'}
+                    </h3>
+                    <p className="text-xs text-amber-100/80 mt-1">
+                      Includes unlimited daily GPS broadcasts, live menu updates, and promotional offer badges.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ======================================================== */}
+            {/* CUSTOMER MODE (AND VENDOR CUSTOMER-PREVIEW): DISCOVER/SAVED*/}
+            {/* ======================================================== */}
+            {(activeTab === 'discover' || activeTab === 'saved') && (
+              <div className="space-y-4">
+                {currentRole === 'vendor' && (
+                  <div className="bg-amber-100 border-2 border-amber-400 p-3 rounded-2xl flex items-center justify-between text-xs font-black text-[#2B1B17]">
+                    <span>👀 Customer Preview Mode — This is how foodies see your stall!</span>
+                    <button
+                      onClick={() => setActiveTab('vendor_gps')}
+                      className="bg-[#2B1B17] text-amber-300 px-3 py-1.5 rounded-xl"
+                    >
+                      Back to Vendor Console
+                    </button>
+                  </div>
+                )}
+
+                {/* HERO BANNER (SHOWN ON DISCOVER) */}
+                {activeTab === 'discover' && (
+                  <div className="bg-gradient-to-br from-[#2B1B17] via-[#4A2511] to-[#D9381E] rounded-3xl p-4 sm:p-6 text-white shadow-xl border-2 border-amber-400/40 relative overflow-hidden">
+                    <div className="relative z-10 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="bg-amber-400 text-slate-950 text-[10px] sm:text-xs font-black px-3 py-1 rounded-full uppercase tracking-wider">
+                          {lang === 'HI' ? '● लाइव स्ट्रीट फूड रडार' : '● LIVE STREET FOOD RADAR'}
+                        </span>
                         <button
-                          onClick={() => setFavoritesOnlyFilter(!favoritesOnlyFilter)}
-                          className={`px-3 py-2.5 rounded-2xl text-xs font-black flex items-center gap-1.5 border transition-all ${
-                            favoritesOnlyFilter
-                              ? 'bg-red-600 text-white border-red-300 shadow-lg'
-                              : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
-                          }`}
+                          onClick={getUserLiveLocation}
+                          disabled={isLocatingUser}
+                          className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-md transition-all"
                         >
-                          <Heart className={`w-3.5 h-3.5 ${favoritesOnlyFilter ? 'fill-white' : 'text-red-300'}`} />
+                          <Crosshair className={`w-3.5 h-3.5 ${isLocatingUser ? 'animate-spin' : ''}`} />
                           <span>
-                            {lang === 'HI' ? 'पसंदीदा' : 'Saved'} ({followedVendorIds.length})
+                            {userLocation ? (lang === 'HI' ? 'लोकेशन एक्टिव' : 'GPS Active') : t('useMyLocation')}
                           </span>
                         </button>
+                      </div>
 
-                        <div className="bg-black/30 p-1 rounded-2xl flex items-center border border-white/20">
+                      <div>
+                        <h2 className="text-xl sm:text-3xl font-black tracking-tight text-amber-300">
+                          {t('heroTitle')}
+                        </h2>
+                        <p className="text-xs sm:text-sm text-amber-100/90 mt-0.5">{t('heroSubtitle')}</p>
+                      </div>
+
+                      {/* SEARCH BAR + QUICK FILTER TOGGLES */}
+                      <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                        <div className="relative flex-1">
+                          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder={t('searchPlaceholder')}
+                            className="w-full pl-10 pr-4 py-2.5 rounded-2xl bg-white text-slate-900 placeholder-slate-400 text-xs sm:text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-400"
+                          />
+                        </div>
+
+                        <div className="flex gap-2 justify-between sm:justify-start">
                           <button
-                            onClick={() => setViewMode('list')}
-                            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 ${
-                              viewMode === 'list' ? 'bg-amber-400 text-slate-900' : 'text-white/80'
+                            onClick={() => setVegOnlyFilter(!vegOnlyFilter)}
+                            className={`px-3 py-2.5 rounded-2xl text-xs font-black flex items-center gap-1.5 border transition-all ${
+                              vegOnlyFilter
+                                ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg'
+                                : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
                             }`}
                           >
-                            <List className="w-3.5 h-3.5" />
+                            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                            <span>{t('pureVeg')}</span>
                           </button>
-                          <button
-                            onClick={() => setViewMode('map')}
-                            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 ${
-                              viewMode === 'map' ? 'bg-amber-400 text-slate-900' : 'text-white/80'
-                            }`}
-                          >
-                            <Map className="w-3.5 h-3.5" />
-                          </button>
+
+                          <div className="bg-black/30 p-1 rounded-2xl flex items-center border border-white/20">
+                            <button
+                              onClick={() => setViewMode('list')}
+                              className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 ${
+                                viewMode === 'list' ? 'bg-amber-400 text-slate-900' : 'text-white/80'
+                              }`}
+                            >
+                              <List className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setViewMode('map')}
+                              className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 ${
+                                viewMode === 'map' ? 'bg-amber-400 text-slate-900' : 'text-white/80'
+                              }`}
+                            >
+                              <Map className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
+                )}
+
+                {activeTab === 'saved' && (
+                  <div className="bg-[#2B1B17] text-white p-5 rounded-3xl border-2 border-amber-400">
+                    <h2 className="text-xl font-black text-amber-300 flex items-center gap-2">
+                      <Heart className="w-5 h-5 fill-red-500 text-red-500" />
+                      <span>{lang === 'HI' ? 'आपके पसंदीदा ठेले' : 'Your Saved & Followed Stalls'}</span>
+                    </h2>
+                    <p className="text-xs text-amber-100/80 mt-1">
+                      Track live locations of your favorite street-food vendors in one place.
+                    </p>
+                  </div>
+                )}
 
                 {/* CATEGORY PILLS & SORT BAR */}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar flex-1">
-                    {FOOD_CATEGORIES.map((cat) => (
-                      <button
-                        key={cat.name}
-                        onClick={() => setSelectedCategory(cat.name)}
-                        className={`px-3.5 py-2 rounded-2xl text-xs font-black whitespace-nowrap flex items-center gap-1.5 border transition-all ${
-                          selectedCategory === cat.name
-                            ? 'bg-[#2B1B17] text-amber-300 border-amber-400 shadow-md'
-                            : 'bg-white text-slate-700 border-amber-200 hover:border-amber-400'
-                        }`}
-                      >
-                        <span>{cat.emoji}</span>
-                        <span>{cat.name}</span>
-                      </button>
-                    ))}
-                  </div>
+                {activeTab === 'discover' && (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar flex-1">
+                      {FOOD_CATEGORIES.map((cat) => (
+                        <button
+                          key={cat.name}
+                          onClick={() => setSelectedCategory(cat.name)}
+                          className={`px-3.5 py-2 rounded-2xl text-xs font-black whitespace-nowrap flex items-center gap-1.5 border transition-all ${
+                            selectedCategory === cat.name
+                              ? 'bg-[#2B1B17] text-amber-300 border-amber-400 shadow-md'
+                              : 'bg-white text-slate-700 border-amber-200 hover:border-amber-400'
+                          }`}
+                        >
+                          <span>{cat.emoji}</span>
+                          <span>{cat.name}</span>
+                        </button>
+                      ))}
+                    </div>
 
-                  <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value)}
-                    className="hidden sm:block bg-white border border-amber-200 rounded-2xl px-3 py-2 text-xs font-black text-slate-700 outline-none"
-                  >
-                    <option value="distance">Sort: Nearest</option>
-                    <option value="freshness">Sort: Just Updated</option>
-                    <option value="rating">Sort: Top Rated</option>
-                  </select>
-                </div>
+                    <select
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value)}
+                      className="hidden sm:block bg-white border border-amber-200 rounded-2xl px-3 py-2 text-xs font-black text-slate-700 outline-none"
+                    >
+                      <option value="distance">Sort: Nearest</option>
+                      <option value="freshness">Sort: Just Updated</option>
+                      <option value="rating">Sort: Top Rated</option>
+                    </select>
+                  </div>
+                )}
 
                 {/* MAP OR LIST VIEW */}
-                {viewMode === 'map' ? (
+                {viewMode === 'map' && activeTab === 'discover' ? (
                   <div className="bg-white rounded-3xl border border-amber-200 p-4 shadow-md space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="font-black text-sm text-slate-900 flex items-center gap-1.5">
@@ -895,18 +1307,18 @@ export default function App() {
                         <Store className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                         <h3 className="text-lg font-bold text-slate-700">Koi stall nahi mila!</h3>
                         <p className="text-sm text-slate-500 mb-4">
-                          Try clearing your search query or category filters.
+                          Try clearing your search query or saving stalls using the heart icon.
                         </p>
                         <button
                           onClick={() => {
                             setSearchQuery('');
                             setSelectedCategory('All');
                             setVegOnlyFilter(false);
-                            setFavoritesOnlyFilter(false);
+                            setActiveTab('discover');
                           }}
                           className="bg-amber-500 text-slate-900 px-4 py-2 rounded-xl text-xs font-bold"
                         >
-                          Reset All Filters
+                          Browse All Stalls
                         </button>
                       </div>
                     ) : (
@@ -917,7 +1329,6 @@ export default function App() {
                           className="bg-white rounded-3xl border border-amber-100 shadow-md hover:shadow-xl transition-all cursor-pointer flex flex-col justify-between overflow-hidden group border-b-4 border-b-amber-500 active:scale-[0.99]"
                         >
                           <div className="p-4 sm:p-5">
-                            {/* TOP BADGES */}
                             <div className="flex items-center justify-between gap-1.5 mb-2.5">
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <span
@@ -955,7 +1366,7 @@ export default function App() {
                                 <button
                                   onClick={(e) => toggleFollowVendor(vendor.id, e)}
                                   className="text-red-500 hover:scale-125 transition-transform p-1"
-                                  title="Favorite Stall"
+                                  title="Save Stall"
                                 >
                                   <Heart
                                     className={`w-5 h-5 ${
@@ -968,7 +1379,6 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* STALL TITLE & OWNER */}
                             <div className="flex items-start justify-between gap-2">
                               <div>
                                 <h3 className="text-base sm:text-lg font-black text-slate-900 group-hover:text-[#D9381E] transition-colors">
@@ -984,7 +1394,6 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* LIVE LANDMARK */}
                             <div className="mt-3 p-2.5 rounded-2xl bg-amber-50/80 border border-amber-200/70 flex items-start gap-2">
                               <MapPin className="w-4 h-4 text-[#D9381E] shrink-0 mt-0.5" />
                               <div className="text-xs">
@@ -999,7 +1408,6 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* TOP MENU PREVIEW */}
                             {vendor.menu && vendor.menu.length > 0 && (
                               <div className="mt-3 flex flex-wrap gap-1.5">
                                 {vendor.menu.slice(0, 3).map((item, i) => (
@@ -1014,7 +1422,6 @@ export default function App() {
                             )}
                           </div>
 
-                          {/* CARD ACTION BAR */}
                           <div className="px-4 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2">
                             <span className="text-[11px] font-bold text-slate-500">
                               {vendor.followersCount || 0} {lang === 'HI' ? 'फ़ॉलोअर्स' : 'Followers'}
@@ -1039,7 +1446,7 @@ export default function App() {
             )}
 
             {/* ======================================================== */}
-            {/* TAB 2: OFFERS & DEALS                                    */}
+            {/* CUSTOMER MODE: OFFERS & DEALS                            */}
             {/* ======================================================== */}
             {activeTab === 'offers' && (
               <div className="space-y-4">
@@ -1049,9 +1456,7 @@ export default function App() {
                     <span>{lang === 'HI' ? 'आज के धमाकेदार स्ट्रीट ऑफर्स' : 'Live Street Food Offers'}</span>
                   </h2>
                   <p className="text-xs text-amber-100/80 mt-1">
-                    {lang === 'HI'
-                      ? 'सीधे ठेले पर कोड दिखाएं और छूट पाएं'
-                      : 'Show coupon code directly at the live stall'}
+                    Show coupon code directly at the live stall
                   </p>
                 </div>
 
@@ -1095,382 +1500,59 @@ export default function App() {
             )}
 
             {/* ======================================================== */}
-            {/* TAB 3: REGISTER STALL (FOUNDING 10 + ₹399/MO)            */}
+            {/* ADMIN MODE: GOVERNANCE & SUBSCRIPTIONS                   */}
             {/* ======================================================== */}
-            {activeTab === 'register' && (
-              <div className="max-w-xl mx-auto bg-white p-5 sm:p-7 rounded-3xl border-2 border-[#2B1B17] shadow-xl space-y-4">
-                <div className="bg-amber-100 border border-amber-400 p-3.5 rounded-2xl">
-                  <p className="text-xs font-black text-[#2B1B17]">
-                    {foundingSlotsRemaining > 0
-                      ? `🎁 Founding Stall Offer: ${foundingSlotsRemaining} / 10 Free Slots Left (3 Months ₹0, then ₹399/mo)`
-                      : '💼 Standard Vendor Plan: ₹399/month (Unlimited Live GPS Broadcasts)'}
+            {currentRole === 'admin' && activeTab === 'admin' && (
+              <div className="space-y-4">
+                <div className="bg-[#2B1B17] text-white p-5 rounded-3xl border-2 border-amber-400">
+                  <h2 className="text-lg font-black text-amber-300">Admin Governance & Subscriptions</h2>
+                  <p className="text-xs text-amber-100/80">
+                    Founding Stalls: {foundingStallsCount}/10 • Active Paid (₹399/mo):{' '}
+                    {vendors.filter((v) => v.subscriptionStatus === 'active').length}
                   </p>
                 </div>
 
-                <h2 className="text-xl font-black text-slate-900">
-                  {lang === 'HI' ? 'अपना स्टॉल रजिस्टर करें' : 'Register Your Street Stall'}
-                </h2>
-
-                <form onSubmit={handleRegisterStall} className="space-y-3 text-xs">
-                  <div>
-                    <label className="font-bold text-slate-700 block mb-1">Stall Name *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Sharma Ji Special Chaat"
-                      value={regForm.name}
-                      onChange={(e) => setRegForm({ ...regForm, name: e.target.value })}
-                      className="w-full p-3 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="font-bold text-slate-700 block mb-1">Owner Name *</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Rajesh Sharma"
-                        value={regForm.ownerName}
-                        onChange={(e) => setRegForm({ ...regForm, ownerName: e.target.value })}
-                        className="w-full p-3 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="font-bold text-slate-700 block mb-1">Phone *</label>
-                      <input
-                        type="tel"
-                        required
-                        placeholder="9876543210"
-                        value={regForm.phone}
-                        onChange={(e) => setRegForm({ ...regForm, phone: e.target.value })}
-                        className="w-full p-3 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-700 block mb-1">Food Category</label>
-                    <select
-                      value={regForm.category}
-                      onChange={(e) => setRegForm({ ...regForm, category: e.target.value })}
-                      className="w-full p-3 border border-slate-300 rounded-xl outline-none focus:border-amber-500 bg-white"
-                    >
-                      {FOOD_CATEGORIES.filter((c) => c.name !== 'All').map((c) => (
-                        <option key={c.name} value={c.name}>
-                          {c.emoji} {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-700 block mb-1">Usual Landmark / Chowk *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Metro Gate No. 2, Main Market"
-                      value={regForm.landmark}
-                      onChange={(e) => setRegForm({ ...regForm, landmark: e.target.value })}
-                      className="w-full p-3 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2 pt-1">
-                    <input
-                      id="regIsVeg"
-                      type="checkbox"
-                      checked={regForm.isVeg}
-                      onChange={(e) => setRegForm({ ...regForm, isVeg: e.target.checked })}
-                      className="w-4 h-4 accent-emerald-600"
-                    />
-                    <label htmlFor="regIsVeg" className="font-bold text-slate-700">
-                      100% Pure Vegetarian Stall
-                    </label>
-                  </div>
-                  <button
-                    type="submit"
-                    className="w-full bg-[#D9381E] hover:bg-red-700 text-white font-black py-3.5 rounded-2xl text-sm shadow-lg"
-                  >
-                    {lang === 'HI' ? 'स्टॉल रजिस्टर करें →' : 'Launch My Stall Live →'}
-                  </button>
-                </form>
-              </div>
-            )}
-
-            {/* ======================================================== */}
-            {/* TAB 4: VENDOR DASHBOARD ("I'M HERE" + MENU + OFFERS)     */}
-            {/* ======================================================== */}
-            {activeTab === 'vendor' && managingVendor && (
-              <div className="space-y-5">
-                {/* VENDOR SELECTOR & PLAN BADGE */}
-                <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <label className="text-[11px] font-bold text-slate-400 uppercase block">Active Stall Portal</label>
-                    <select
-                      value={managingVendor.id}
-                      onChange={(e) => setManagingVendorId(e.target.value)}
-                      className="text-base font-black text-slate-900 bg-transparent outline-none cursor-pointer"
-                    >
-                      {vendors.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.name} ({v.landmark})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`text-xs font-black px-3 py-1.5 rounded-full ${
-                        managingVendor.subscriptionStatus === 'expired'
-                          ? 'bg-red-100 text-red-700'
-                          : 'bg-emerald-100 text-emerald-800'
-                      }`}
-                    >
-                      {managingVendor.planType === 'FOUNDER_10'
-                        ? 'Founding Stall • 3 Mo FREE'
-                        : 'Standard Plan • ₹399/mo'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* GIANT "I'M HERE" GPS BROADCAST BUTTON */}
-                <div className="bg-gradient-to-r from-[#2B1B17] to-[#4A2511] p-6 rounded-3xl text-white border-2 border-amber-400 shadow-xl space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-lg sm:text-xl font-black text-amber-300">
-                        {lang === 'HI' ? 'लाइव लोकेशन ब्रॉडकास्ट' : 'Live Stall GPS Broadcast'}
-                      </h3>
-                      <p className="text-xs text-amber-100/80">
-                        Current: {managingVendor.landmark} •{' '}
-                        {formatFreshness(managingVendor.lastLocationUpdatedAt, nowMs).text}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <input
-                      type="text"
-                      placeholder="Update landmark note (e.g. Gate 3 ke paas)"
-                      value={vendorLandmarkInput}
-                      onChange={(e) => setVendorLandmarkInput(e.target.value)}
-                      className="flex-1 px-4 py-3 rounded-2xl bg-white text-slate-900 text-xs font-bold outline-none"
-                    />
-                    <button
-                      onClick={() => handleVendorImHereBroadcast(managingVendor)}
-                      disabled={isBroadcastingGps || managingVendor.subscriptionStatus === 'expired'}
-                      className="bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 text-slate-950 font-black px-6 py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95"
-                    >
-                      <Radio className={`w-4 h-4 ${isBroadcastingGps ? 'animate-spin' : ''}`} />
-                      <span>{lang === 'HI' ? 'मैं यहीं हूँ (I’M HERE)' : 'I’M HERE NOW (BROADCAST GPS)'}</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* LIVE CROWD / RUSH STATUS METER */}
-                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-black text-sm sm:text-base text-slate-900 flex items-center gap-2">
-                      <Users className="w-4 h-4 text-[#D9381E]" />
-                      <span>{lang === 'HI' ? 'अभी स्टॉल पर भीड़ कैसी है?' : 'Live Crowd / Rush Status'}</span>
-                    </h3>
-                    <span className="text-xs font-bold text-slate-500">
-                      Current: {managingVendor.crowdStatus || 'No Wait'}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { label: 'No Wait', hi: 'खाली है' },
-                      { label: 'Thodi Bheed', hi: 'थोड़ी भीड़' },
-                      { label: 'Full Rush', hi: 'फुल भीड़' }
-                    ].map((item) => {
-                      const active = (managingVendor.crowdStatus || 'No Wait') === item.label;
-                      return (
-                        <button
-                          key={item.label}
-                          onClick={() => handleUpdateCrowdStatus(item.label)}
-                          className={`py-2.5 px-2 rounded-2xl text-xs font-black border-2 transition-all ${
-                            active
-                              ? 'bg-[#2B1B17] text-amber-300 border-amber-400 shadow'
-                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-amber-300'
-                          }`}
-                        >
-                          {lang === 'HI' ? item.hi : item.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* MANAGE LIVE MENU & PUBLISH OFFERS */}
-                <div className={isMobileFrame ? 'grid grid-cols-1 gap-4' : 'grid grid-cols-1 lg:grid-cols-2 gap-6'}>
-                  <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
-                    <h3 className="font-black text-sm sm:text-base text-slate-900 flex items-center gap-2">
-                      <Utensils className="w-4 h-4 text-[#D9381E]" />
-                      <span>{lang === 'HI' ? 'मेनू और रेट अपडेट करें' : 'Live Menu & ₹ Pricing'}</span>
-                    </h3>
-                    <form onSubmit={handleAddMenuItem} className="flex gap-2">
-                      <input
-                        type="text"
-                        required
-                        placeholder="Dish name (e.g. Paneer Momos)"
-                        value={newMenuItemName}
-                        onChange={(e) => setNewMenuItemName(e.target.value)}
-                        className="flex-1 p-2.5 border border-slate-300 rounded-xl text-xs outline-none focus:border-amber-500"
-                      />
-                      <input
-                        type="number"
-                        required
-                        min="1"
-                        placeholder="₹ Price"
-                        value={newMenuItemPrice}
-                        onChange={(e) => setNewMenuItemPrice(e.target.value)}
-                        className="w-24 p-2.5 border border-slate-300 rounded-xl text-xs outline-none focus:border-amber-500"
-                      />
-                      <button type="submit" className="bg-[#2B1B17] text-amber-300 font-black px-3.5 rounded-xl text-xs">
-                        + Add
-                      </button>
-                    </form>
-                    <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-                      {(managingVendor.menu || []).map((item, idx) => (
-                        <div
-                          key={idx}
-                          className="flex items-center justify-between bg-amber-50/70 px-3 py-2 rounded-xl border border-amber-100 text-xs"
-                        >
-                          <span className="font-bold text-slate-800">{item.name}</span>
-                          <div className="flex items-center gap-3">
-                            <span className="font-black text-[#D9381E]">₹{item.price}</span>
-                            <button
-                              onClick={() => handleRemoveMenuItem(idx)}
-                              className="text-slate-400 hover:text-red-600"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
-                    <h3 className="font-black text-sm sm:text-base text-slate-900 flex items-center gap-2">
-                      <Tag className="w-4 h-4 text-[#D9381E]" />
-                      <span>{lang === 'HI' ? 'नया ऑफर डालें' : 'Publish Live Stall Offer'}</span>
-                    </h3>
-                    <form onSubmit={handlePublishOffer} className="space-y-2.5 text-xs">
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          required
-                          placeholder="Offer Title (e.g. Evening Chai Combo)"
-                          value={newOfferTitle}
-                          onChange={(e) => setNewOfferTitle(e.target.value)}
-                          className="flex-1 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
-                        />
-                        <input
-                          type="text"
-                          required
-                          placeholder="20% OFF / ₹10 OFF"
-                          value={newOfferDiscount}
-                          onChange={(e) => setNewOfferDiscount(e.target.value)}
-                          className="w-28 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
-                        />
+                <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm divide-y divide-slate-100">
+                  {vendors.map((v) => (
+                    <div key={v.id} className="p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+                      <div>
+                        <p className="font-black text-slate-900">{v.name}</p>
+                        <p className="text-slate-500">
+                          {v.ownerName} • {v.planType === 'FOUNDER_10' ? 'Founder (3 Mo Free)' : '₹399/mo Plan'}
+                        </p>
                       </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          placeholder="Code (e.g. CHAI20)"
-                          value={newOfferCode}
-                          onChange={(e) => setNewOfferCode(e.target.value)}
-                          className="w-32 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500 uppercase"
-                        />
-                        <input
-                          type="text"
-                          placeholder="Short details..."
-                          value={newOfferDesc}
-                          onChange={(e) => setNewOfferDesc(e.target.value)}
-                          className="flex-1 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
-                        />
-                      </div>
-                      <button
-                        type="submit"
-                        className="w-full bg-[#D9381E] hover:bg-red-700 text-white font-black py-2.5 rounded-xl shadow"
+                      <select
+                        value={v.subscriptionStatus || 'trial_active'}
+                        onChange={(e) => updateVendorInDB(v.id, { subscriptionStatus: e.target.value })}
+                        className="border border-slate-300 rounded-xl px-2.5 py-1.5 font-bold bg-slate-50"
                       >
-                        {lang === 'HI' ? 'ऑफर लाइव करें' : 'Publish Offer Now'}
-                      </button>
-                    </form>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* ======================================================== */}
-            {/* TAB 5: ADMIN SUBSCRIPTION & GOVERNANCE PANEL             */}
-            {/* ======================================================== */}
-            {activeTab === 'admin' && (
-              <div className="space-y-4">
-                <div className="bg-[#2B1B17] text-white p-5 rounded-3xl border-2 border-amber-400 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg font-black text-amber-300">Admin Governance & Subscriptions</h2>
-                    <p className="text-xs text-amber-100/80">
-                      Founding Stalls: {foundingStallsCount}/10 • Active Paid (₹399/mo):{' '}
-                      {vendors.filter((v) => v.subscriptionStatus === 'active').length}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm">
-                  <div className="divide-y divide-slate-100">
-                    {vendors.map((v) => (
-                      <div key={v.id} className="p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
-                        <div>
-                          <p className="font-black text-slate-900">{v.name}</p>
-                          <p className="text-slate-500">
-                            {v.ownerName} • {v.planType === 'FOUNDER_10' ? 'Founder (3 Mo Free)' : '₹399/mo Plan'}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <select
-                            value={v.subscriptionStatus || 'trial_active'}
-                            onChange={(e) => updateVendorInDB(v.id, { subscriptionStatus: e.target.value })}
-                            className="border border-slate-300 rounded-xl px-2.5 py-1.5 font-bold bg-slate-50"
-                          >
-                            <option value="trial_active">Trial Active (₹0)</option>
-                            <option value="active">Paid Active (₹399/mo)</option>
-                            <option value="expired">Expired (Lock GPS)</option>
-                          </select>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                        <option value="trial_active">Trial Active (₹0)</option>
+                        <option value="active">Paid Active (₹399/mo)</option>
+                        <option value="expired">Expired (Lock GPS)</option>
+                      </select>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
           </main>
         </div>
 
-        {/* MOBILE BOTTOM NAVIGATION BAR */}
+        {/* MOBILE ROLE-SPECIFIC BOTTOM NAVIGATION BAR */}
         <nav
           className={`${
             isMobileFrame ? 'sticky bottom-0' : 'md:hidden fixed bottom-0 left-0 right-0'
           } z-30 bg-[#2B1B17] text-white border-t-2 border-amber-400 px-2 py-2 flex items-center justify-around`}
         >
-          {[
-            { id: 'discover', icon: Compass, label: lang === 'HI' ? 'खोजें' : 'Discover' },
-            { id: 'offers', icon: Tag, label: lang === 'HI' ? 'ऑफ़र्स' : 'Offers' },
-            { id: 'register', icon: Plus, label: lang === 'HI' ? 'जोड़ें' : 'Add Stall', highlight: true },
-            { id: 'vendor', icon: Radio, label: lang === 'HI' ? 'ठेला' : 'Vendor' },
-            { id: 'admin', icon: ShieldCheck, label: 'Admin' }
-          ].map((item) => {
+          {navItems.map((item) => {
             const IconComp = item.icon;
             const active = activeTab === item.id;
             return (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`flex flex-col items-center gap-0.5 px-2 py-1 rounded-xl text-[10px] font-black transition-all ${
-                  item.highlight
-                    ? 'bg-[#D9381E] text-white -mt-5 px-3.5 py-2.5 rounded-2xl border-2 border-amber-300 shadow-lg'
-                    : active
-                    ? 'text-amber-300'
-                    : 'text-slate-300'
+                className={`flex flex-col items-center gap-0.5 px-2.5 py-1 rounded-xl text-[10px] font-black transition-all ${
+                  active ? 'text-amber-300' : 'text-slate-300'
                 }`}
               >
                 <IconComp className="w-4 h-4" />
@@ -1490,101 +1572,181 @@ export default function App() {
         <span>{isMobileFrame ? 'Desktop Full View' : 'Phone App View'}</span>
       </button>
 
-      {/* ROLE SELECTION MODAL (CUSTOMER LOGIN OR REGISTER STALL) */}
+      {/* UNIFIED ROLE & AUTH MODAL (SEPARATE CUSTOMER VS VENDOR FLOWS) */}
       {showRoleModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-3">
-          <div className="bg-white w-full max-w-md rounded-3xl border-2 border-[#2B1B17] p-5 space-y-4 shadow-2xl">
+          <div className="bg-white w-full max-w-md rounded-3xl border-2 border-[#2B1B17] p-5 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-black text-slate-900">
-                {lang === 'HI' ? 'आप कौन हैं?' : 'Welcome to KHAOZI'}
+                {roleModalView === 'choose'
+                  ? 'Select Your KHAOZI Mode'
+                  : roleModalView === 'customer_login'
+                  ? 'Customer Login'
+                  : roleModalView === 'vendor_login'
+                  ? 'Vendor Stall Login'
+                  : 'Register New Street Stall'}
               </h3>
               <button onClick={() => setShowRoleModal(false)} className="p-1.5 rounded-full hover:bg-slate-100">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="grid grid-cols-1 gap-3">
-              <button
-                onClick={() => {
-                  setShowRoleModal(false);
-                  setShowAuthModal(true);
-                }}
-                className="p-4 rounded-2xl border-2 border-amber-300 bg-amber-50 hover:bg-amber-100 text-left transition-all"
-              >
-                <p className="font-black text-sm text-slate-900">
-                  {customerAuth ? `✅ Logged in: ${customerAuth.contact}` : '🍔 Customer Login / Sign Up'}
-                </p>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  Unlock live GPS distance, Google Maps directions & saved stall alerts.
-                </p>
-              </button>
-
-              <button
-                onClick={() => {
-                  setShowRoleModal(false);
-                  setActiveTab('register');
-                }}
-                className="p-4 rounded-2xl border-2 border-[#D9381E] bg-red-50 hover:bg-red-100 text-left transition-all"
-              >
-                <p className="font-black text-sm text-[#D9381E]">🛒 Register Your Stall (Vendor)</p>
-                <p className="text-xs text-slate-700 mt-0.5">
-                  {foundingSlotsRemaining > 0
-                    ? `First 10 stalls get 3 Months FREE (${foundingSlotsRemaining} slots left)!`
-                    : 'Only ₹399/month for unlimited live location updates.'}
-                </p>
-              </button>
-
-              {customerAuth && (
+            {roleModalView === 'choose' && (
+              <div className="space-y-3">
                 <button
-                  onClick={() => {
-                    setCustomerAuth(null);
-                    localStorage.removeItem('khaozi_customer_auth');
-                    setShowRoleModal(false);
-                    showToast('Logged out successfully', 'info');
-                  }}
-                  className="text-xs font-bold text-red-600 hover:underline text-center pt-1"
+                  onClick={() => setRoleModalView('customer_login')}
+                  className="w-full p-4 rounded-2xl border-2 border-amber-300 bg-amber-50 hover:bg-amber-100 text-left transition-all"
                 >
-                  Logout Customer Account
+                  <p className="font-black text-sm text-slate-900">🍔 Customer Mode (Foodie)</p>
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    Browse live stalls, unlock GPS distance, save favorites & claim offers.
+                  </p>
                 </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* CUSTOMER AUTH GATE MODAL */}
-      {showAuthModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-3">
-          <div className="bg-white w-full max-w-md rounded-3xl border-2 border-[#2B1B17] p-5 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-black text-slate-900">
-                {lang === 'HI' ? 'लोकेशन के लिए लॉगिन करें' : 'Quick Customer Login'}
-              </h3>
-              <button onClick={() => setShowAuthModal(false)} className="p-1.5 rounded-full hover:bg-slate-100">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <p className="text-xs text-slate-600">
-              {lang === 'HI'
-                ? 'लाइव दूरी देखने और ठेले का रास्ता खोलने के लिए मोबाइल नंबर या ईमेल डालें।'
-                : 'Enter your mobile number or email to unlock live GPS distance & Google Maps directions.'}
-            </p>
-            <form onSubmit={handleCustomerAuthSubmit} className="space-y-3">
-              <input
-                type="text"
-                required
-                placeholder="Mobile Number or Email"
-                value={authInput}
-                onChange={(e) => setAuthInput(e.target.value)}
-                className="w-full p-3 border border-slate-300 rounded-xl text-xs font-bold outline-none focus:border-amber-500"
-              />
-              <button
-                type="submit"
-                className="w-full bg-[#D9381E] text-white font-black py-3 rounded-2xl text-xs shadow-lg"
-              >
-                {lang === 'HI' ? 'आगे बढ़ें →' : 'Continue & Unlock GPS →'}
-              </button>
-            </form>
+                <button
+                  onClick={() => setRoleModalView('vendor_register')}
+                  className="w-full p-4 rounded-2xl border-2 border-[#D9381E] bg-red-50 hover:bg-red-100 text-left transition-all"
+                >
+                  <p className="font-black text-sm text-[#D9381E]">🛒 Register New Stall (Vendor)</p>
+                  <p className="text-xs text-slate-700 mt-0.5">
+                    {foundingSlotsRemaining > 0
+                      ? `First 10 stalls get 3 Months FREE (${foundingSlotsRemaining} slots left)!`
+                      : 'Only ₹399/month for Vendor Business Console.'}
+                  </p>
+                </button>
+
+                <button
+                  onClick={() => setRoleModalView('vendor_login')}
+                  className="w-full p-3.5 rounded-2xl border-2 border-slate-800 bg-slate-900 text-amber-300 text-left transition-all"
+                >
+                  <p className="font-black text-xs">🔑 Already Registered Stall? Open Vendor Console →</p>
+                </button>
+
+                {session && (
+                  <button
+                    onClick={handleLogout}
+                    className="w-full py-2 text-xs font-black text-red-600 flex items-center justify-center gap-1 hover:underline"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Logout ({session.contact})</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {roleModalView === 'customer_login' && (
+              <form onSubmit={handleCustomerLogin} className="space-y-3 text-xs">
+                <p className="text-slate-600">
+                  Enter your mobile number or email to unlock live GPS distance and Google Maps directions.
+                </p>
+                <input
+                  type="text"
+                  required
+                  placeholder="Mobile Number or Email"
+                  value={authInput}
+                  onChange={(e) => setAuthInput(e.target.value)}
+                  className="w-full p-3 border border-slate-300 rounded-xl font-bold outline-none focus:border-amber-500"
+                />
+                <button
+                  type="submit"
+                  className="w-full bg-[#2B1B17] text-amber-300 font-black py-3 rounded-2xl shadow-lg"
+                >
+                  Continue as Customer →
+                </button>
+              </form>
+            )}
+
+            {roleModalView === 'vendor_login' && (
+              <form onSubmit={handleVendorPhoneLogin} className="space-y-3 text-xs">
+                <p className="text-slate-600">
+                  Enter your registered stall mobile number (try <strong>9876543210</strong> for demo) to open your Vendor Business Console.
+                </p>
+                <input
+                  type="tel"
+                  required
+                  placeholder="Registered Mobile Number"
+                  value={vendorLoginPhone}
+                  onChange={(e) => setVendorLoginPhone(e.target.value)}
+                  className="w-full p-3 border border-slate-300 rounded-xl font-bold outline-none focus:border-amber-500"
+                />
+                <button
+                  type="submit"
+                  className="w-full bg-[#D9381E] text-white font-black py-3 rounded-2xl shadow-lg"
+                >
+                  Open Vendor Business Console →
+                </button>
+              </form>
+            )}
+
+            {roleModalView === 'vendor_register' && (
+              <form onSubmit={handleRegisterStall} className="space-y-3 text-xs">
+                <div className="bg-amber-100 border border-amber-400 p-2.5 rounded-xl font-black text-[#2B1B17]">
+                  {foundingSlotsRemaining > 0
+                    ? `🎁 Founding Offer: ${foundingSlotsRemaining}/10 Free Slots Left (3 Mo ₹0)`
+                    : '💼 Standard Plan: ₹399/month'}
+                </div>
+                <input
+                  type="text"
+                  required
+                  placeholder="Stall Name (e.g. Sharma Ji Chaat)"
+                  value={regForm.name}
+                  onChange={(e) => setRegForm({ ...regForm, name: e.target.value })}
+                  className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    required
+                    placeholder="Owner Name"
+                    value={regForm.ownerName}
+                    onChange={(e) => setRegForm({ ...regForm, ownerName: e.target.value })}
+                    className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
+                  />
+                  <input
+                    type="tel"
+                    required
+                    placeholder="Mobile Number"
+                    value={regForm.phone}
+                    onChange={(e) => setRegForm({ ...regForm, phone: e.target.value })}
+                    className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
+                  />
+                </div>
+                <select
+                  value={regForm.category}
+                  onChange={(e) => setRegForm({ ...regForm, category: e.target.value })}
+                  className="w-full p-2.5 border border-slate-300 rounded-xl bg-white outline-none"
+                >
+                  {FOOD_CATEGORIES.filter((c) => c.name !== 'All').map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.emoji} {c.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  required
+                  placeholder="Usual Chowk / Metro Gate Landmark"
+                  value={regForm.landmark}
+                  onChange={(e) => setRegForm({ ...regForm, landmark: e.target.value })}
+                  className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
+                />
+                <label className="flex items-center gap-2 font-bold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={regForm.isVeg}
+                    onChange={(e) => setRegForm({ ...regForm, isVeg: e.target.checked })}
+                    className="accent-emerald-600"
+                  />
+                  100% Pure Vegetarian Stall
+                </label>
+                <button
+                  type="submit"
+                  className="w-full bg-[#D9381E] text-white font-black py-3 rounded-2xl shadow-lg"
+                >
+                  Register & Open Vendor Console →
+                </button>
+              </form>
+            )}
           </div>
         </div>
       )}
@@ -1666,7 +1828,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* MODAL FOOTER */}
             <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2 shrink-0">
               <button
                 onClick={() => setReportModalVendor(selectedVendor)}
