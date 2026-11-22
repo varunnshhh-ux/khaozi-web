@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  MapPin, Navigation, Star, Shield, Tag, Plus,
+  MapPin, Navigation, Star, Shield, Tag,
   Search, AlertTriangle, Store, Radio, Sparkles, Utensils,
   X, Map, List, Crosshair, Smartphone, Monitor, Heart,
-  Share2, Compass, Users, Trash2, Eye, BarChart3, LogOut, CheckCircle2
+  Share2, Compass, Users, Trash2, Eye, BarChart3, LogOut, Plus
 } from 'lucide-react';
 
 // ============================================================================
@@ -27,7 +27,7 @@ const safeStorage = {
     try {
       window.localStorage.setItem(key, JSON.stringify(value));
     } catch {
-      // Ignore storage quota / sandbox restrictions
+      // Ignore storage quota or sandbox errors
     }
   },
   remove: (key) => {
@@ -155,11 +155,11 @@ const TRANSLATIONS = {
     discover: 'Discover',
     offers: 'Offers',
     saved: 'Saved Stalls',
+    profile: 'My Profile',
     liveBroadcast: 'Live GPS & Rush',
     menuOffers: 'Menu & Offers',
     analyticsPlan: 'Analytics & Plan',
     customerPreview: 'Customer Preview',
-    admin: 'Admin',
     heroTitle: 'Aaj kya khana hai?',
     heroSubtitle: 'Find live moving street-food carts near your metro gate, college & chowk.',
     useMyLocation: 'Use My Location',
@@ -172,11 +172,11 @@ const TRANSLATIONS = {
     discover: 'खोजें',
     offers: 'ऑफ़र्स',
     saved: 'पसंदीदा',
+    profile: 'मेरी प्रोफ़ाइल',
     liveBroadcast: 'लाइव GPS और भीड़',
     menuOffers: 'मेनू और ऑफ़र्स',
     analyticsPlan: 'रिपोर्ट और प्लान',
     customerPreview: 'ग्राहक व्यू देखें',
-    admin: 'एडमिन',
     heroTitle: 'आज क्या खाना है?',
     heroSubtitle: 'अपने पास के मेट्रो गेट, कॉलेज और चौक पर लगे लाइव ठेले तुरंत खोजें।',
     useMyLocation: 'मेरी लोकेशन देखें',
@@ -222,7 +222,7 @@ export default function App() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Role-Based Session: { role: 'customer' | 'vendor' | 'admin', contact, vendorId? }
+  // Role-Based Session: { role: 'customer' | 'vendor' | 'admin', contact, phone?, area?, vendorId? }
   const [session, setSession] = useState(() => safeStorage.get(SESSION_KEY, null));
   const currentRole = session?.role || 'customer';
 
@@ -254,16 +254,23 @@ export default function App() {
   const [sortBy, setSortBy] = useState('distance');
   const [viewMode, setViewMode] = useState('list');
 
-  // Modals
+  // Modals & Customer / Vendor OTP Onboarding States
   const [selectedVendorId, setSelectedVendorId] = useState(null);
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [roleModalView, setRoleModalView] = useState('choose'); // 'choose' | 'customer_login' | 'vendor_login' | 'vendor_register'
-  const [authInput, setAuthInput] = useState('');
+
+  // Customer Onboarding Fields
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerArea, setCustomerArea] = useState('');
+  const [customerLocationConsent, setCustomerLocationConsent] = useState(true);
+  const [otpSentCode, setOtpSentCode] = useState('');
+  const [otpInput, setOtpInput] = useState('');
+
+  // Vendor Login Fields
   const [vendorLoginPhone, setVendorLoginPhone] = useState('');
-  const [pendingDirectionVendor, setPendingDirectionVendor] = useState(null);
-  const [reportModalVendor, setReportModalVendor] = useState(null);
-  const [reportReason, setReportReason] = useState('Wrong / Old Location');
-  const [reportDetails, setReportDetails] = useState('');
+  const [vendorLoginOtpSent, setVendorLoginOtpSent] = useState('');
+  const [vendorLoginOtpInput, setVendorLoginOtpInput] = useState('');
 
   // Vendor Registration Form
   const [regForm, setRegForm] = useState({
@@ -272,8 +279,18 @@ export default function App() {
     phone: '',
     category: 'Golgappe / Pani Puri',
     landmark: '',
-    isVeg: true
+    cityArea: 'Jaipur',
+    isVeg: true,
+    locationAccess: true
   });
+  const [regOtpSent, setRegOtpSent] = useState('');
+  const [regOtpInput, setRegOtpInput] = useState('');
+
+  // Pending direction & Report modal
+  const [pendingDirectionVendor, setPendingDirectionVendor] = useState(null);
+  const [reportModalVendor, setReportModalVendor] = useState(null);
+  const [reportReason, setReportReason] = useState('Wrong / Old Location');
+  const [reportDetails, setReportDetails] = useState('');
 
   // Vendor Console States
   const [managingVendorId, setManagingVendorId] = useState(() => session?.vendorId || 'v_1');
@@ -298,7 +315,7 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Safe Multi-tab BroadcastChannel sync
+  // Multi-tab BroadcastChannel sync
   useEffect(() => {
     let bc = null;
     try {
@@ -311,7 +328,7 @@ export default function App() {
         };
       }
     } catch {
-      // Ignore if BroadcastChannel blocked in iframe
+      // Ignore if blocked in sandbox
     }
     return () => {
       try {
@@ -427,57 +444,188 @@ export default function App() {
     return list;
   }, [vendors]);
 
-  // Customer Login Handler
+  // Trigger Browser Geolocation
+  const triggerDeviceLocationAccess = (onDone) => {
+    if (!navigator.geolocation) {
+      setUserLocation({ lat: 26.8982, lng: 75.8295 });
+      showToast('Using Jaipur bazaar center location', 'info');
+      if (onDone) onDone();
+      return;
+    }
+    setIsLocatingUser(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setIsLocatingUser(false);
+        showToast(lang === 'HI' ? 'लाइव GPS लोकेशन मिल गई!' : 'Live GPS location enabled!', 'success');
+        if (onDone) onDone();
+      },
+      () => {
+        setUserLocation({ lat: 26.8982, lng: 75.8295 });
+        setIsLocatingUser(false);
+        showToast('Location permission skipped — using Jaipur center', 'info');
+        if (onDone) onDone();
+      },
+      { enableHighAccuracy: true, timeout: 6000 }
+    );
+  };
+
+  // Customer OTP Trigger
+  const triggerCustomerOtp = () => {
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    if (!customerName.trim()) {
+      showToast('Pehle apna naam likhein', 'error');
+      return;
+    }
+    if (cleanPhone.length < 10) {
+      showToast('Sahi 10-digit mobile number daalein', 'error');
+      return;
+    }
+    const generated = String(Math.floor(1000 + Math.random() * 9000));
+    setOtpSentCode(generated);
+    setOtpInput(generated);
+    showToast(`OTP sent to +91 ${cleanPhone}: ${generated}`, 'success');
+  };
+
+  // Customer Login Submit (Name + Mobile + OTP + Location Access)
   const handleCustomerLogin = (e) => {
     e.preventDefault();
-    if (!authInput.trim()) return;
-    const newSession = { role: 'customer', contact: authInput.trim(), loggedInAt: Date.now() };
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    if (!customerName.trim() || cleanPhone.length < 10) {
+      showToast('Naam aur 10-digit mobile number zaroori hai', 'error');
+      return;
+    }
+    if (!otpSentCode) {
+      triggerCustomerOtp();
+      return;
+    }
+    if (otpInput.trim() !== otpSentCode) {
+      showToast('Galat 4-digit OTP! Dobara check karein.', 'error');
+      return;
+    }
+
+    const newSession = {
+      role: 'customer',
+      contact: customerName.trim(),
+      fullName: customerName.trim(),
+      phone: cleanPhone,
+      area: customerArea.trim() || 'Jaipur',
+      loggedInAt: Date.now()
+    };
     updateSession(newSession);
     setActiveTab('discover');
     setShowRoleModal(false);
-    setAuthInput('');
+    setOtpSentCode('');
+    setOtpInput('');
+
     showToast(
       lang === 'HI'
-        ? 'ग्राहक मोड चालू! अब आप लाइव दूरी और रास्ता देख सकते हैं'
-        : 'Logged in as Customer! Live GPS & Directions unlocked',
+        ? `स्वागत है ${newSession.fullName}! OTP वेरिफाई हो गया`
+        : `Welcome ${newSession.fullName}! OTP verified`,
       'success'
     );
 
-    if (pendingDirectionVendor) {
-      const target = pendingDirectionVendor;
-      setPendingDirectionVendor(null);
-      window.open(
-        `https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}`,
-        '_blank',
-        'noopener,noreferrer'
-      );
+    const openPending = () => {
+      if (pendingDirectionVendor) {
+        const target = pendingDirectionVendor;
+        setPendingDirectionVendor(null);
+        window.open(
+          `https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}`,
+          '_blank',
+          'noopener,noreferrer'
+        );
+      }
+    };
+
+    if (customerLocationConsent) {
+      triggerDeviceLocationAccess(openPending);
+    } else {
+      openPending();
     }
   };
 
-  // Vendor Existing Stall Login Handler
+  // Vendor Login OTP Trigger
+  const handleSendVendorLoginOtp = () => {
+    const cleaned = vendorLoginPhone.replace(/\D/g, '');
+    if (cleaned.length < 10) {
+      showToast('10-digit registered mobile number daalein', 'error');
+      return;
+    }
+    const code = String(Math.floor(1000 + Math.random() * 9000));
+    setVendorLoginOtpSent(code);
+    setVendorLoginOtpInput(code);
+    showToast(`Vendor OTP sent to +91 ${cleaned}: ${code}`, 'success');
+  };
+
+  // Vendor Login Submit
   const handleVendorPhoneLogin = (e) => {
     e.preventDefault();
-    const cleaned = vendorLoginPhone.trim();
-    if (!cleaned) return;
+    const cleaned = vendorLoginPhone.replace(/\D/g, '');
+    if (cleaned.length < 10) {
+      showToast('Sahi 10-digit mobile number daalein', 'error');
+      return;
+    }
+    if (!vendorLoginOtpSent) {
+      handleSendVendorLoginOtp();
+      return;
+    }
+    if (vendorLoginOtpInput.trim() !== vendorLoginOtpSent) {
+      showToast('Galat OTP! Sahi 4-digit OTP daalein', 'error');
+      return;
+    }
+
     const found =
-      vendors.find((v) => v.phone.includes(cleaned)) || vendors[0];
+      vendors.find((v) => v.phone.replace(/\D/g, '').includes(cleaned)) || vendors[0];
     setManagingVendorId(found.id);
     updateSession({
       role: 'vendor',
       contact: found.ownerName,
+      phone: cleaned,
       vendorId: found.id,
       stallName: found.name
     });
     setActiveTab('vendor_gps');
     setShowRoleModal(false);
     setVendorLoginPhone('');
-    showToast(`Welcome back, ${found.ownerName}! Switched to Vendor Console.`, 'success');
+    setVendorLoginOtpSent('');
+    setVendorLoginOtpInput('');
+    triggerDeviceLocationAccess();
+    showToast(`Welcome back, ${found.ownerName}! Vendor Console unlocked.`, 'success');
   };
 
-  // Register New Stall -> Automatically activates Vendor Mode & Vendor Menus
+  // Vendor Registration OTP Trigger
+  const handleSendRegisterOtp = () => {
+    const cleanPhone = regForm.phone.replace(/\D/g, '');
+    if (!regForm.name.trim() || !regForm.ownerName.trim() || !regForm.landmark.trim()) {
+      showToast('Stall naam, owner naam aur landmark pehle bharein', 'error');
+      return;
+    }
+    if (cleanPhone.length < 10) {
+      showToast('Sahi 10-digit mobile number daalein', 'error');
+      return;
+    }
+    const code = String(Math.floor(1000 + Math.random() * 9000));
+    setRegOtpSent(code);
+    setRegOtpInput(code);
+    showToast(`Registration OTP sent to +91 ${cleanPhone}: ${code}`, 'success');
+  };
+
+  // Register New Stall
   const handleRegisterStall = (e) => {
     e.preventDefault();
-    if (!regForm.name.trim() || !regForm.ownerName.trim() || !regForm.landmark.trim()) return;
+    const cleanPhone = regForm.phone.replace(/\D/g, '');
+    if (!regForm.name.trim() || !regForm.ownerName.trim() || !regForm.landmark.trim() || cleanPhone.length < 10) {
+      showToast('Saari zaroori details bharein', 'error');
+      return;
+    }
+    if (!regOtpSent) {
+      handleSendRegisterOtp();
+      return;
+    }
+    if (regOtpInput.trim() !== regOtpSent) {
+      showToast('Galat 4-digit OTP! Dobara check karein', 'error');
+      return;
+    }
 
     const isFounder = foundingSlotsRemaining > 0;
     const newStallId = `v_${Date.now()}`;
@@ -485,11 +633,11 @@ export default function App() {
       id: newStallId,
       name: regForm.name.trim(),
       ownerName: regForm.ownerName.trim(),
-      phone: regForm.phone.trim() || '9876500000',
+      phone: cleanPhone,
       category: regForm.category,
-      landmark: regForm.landmark.trim(),
-      lat: 26.89 + (Math.random() - 0.5) * 0.03,
-      lng: 75.81 + (Math.random() - 0.5) * 0.03,
+      landmark: `${regForm.landmark.trim()} (${regForm.cityArea.trim() || 'Jaipur'})`,
+      lat: userLocation?.lat || 26.89 + (Math.random() - 0.5) * 0.03,
+      lng: userLocation?.lng || 75.81 + (Math.random() - 0.5) * 0.03,
       isVeg: regForm.isVeg,
       rating: 5.0,
       followersCount: 1,
@@ -509,12 +657,27 @@ export default function App() {
     updateSession({
       role: 'vendor',
       contact: newStall.ownerName,
+      phone: cleanPhone,
       vendorId: newStallId,
       stallName: newStall.name
     });
-    setRegForm({ name: '', ownerName: '', phone: '', category: 'Golgappe / Pani Puri', landmark: '', isVeg: true });
+    setRegForm({
+      name: '',
+      ownerName: '',
+      phone: '',
+      category: 'Golgappe / Pani Puri',
+      landmark: '',
+      cityArea: 'Jaipur',
+      isVeg: true,
+      locationAccess: true
+    });
+    setRegOtpSent('');
+    setRegOtpInput('');
     setShowRoleModal(false);
     setActiveTab('vendor_gps');
+    if (regForm.locationAccess) {
+      triggerDeviceLocationAccess();
+    }
     showToast(
       isFounder
         ? '🎉 Stall Registered! Vendor Console unlocked (3 Months FREE)'
@@ -527,35 +690,16 @@ export default function App() {
     updateSession(null);
     setActiveTab('discover');
     setShowRoleModal(false);
-    showToast('Switched back to Guest Customer View', 'info');
+    showToast('Logged out! Back to Guest View', 'info');
   };
 
-  // Customer Geolocation
   const getUserLiveLocation = () => {
     if (!session) {
       setRoleModalView('customer_login');
       setShowRoleModal(true);
       return;
     }
-    if (!navigator.geolocation) {
-      setUserLocation({ lat: 26.8982, lng: 75.8295 });
-      showToast('Using bazaar center location', 'info');
-      return;
-    }
-    setIsLocatingUser(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        setIsLocatingUser(false);
-        showToast(lang === 'HI' ? 'लाइव लोकेशन अपडेट हो गई!' : 'Live GPS location updated!', 'success');
-      },
-      () => {
-        setUserLocation({ lat: 26.8982, lng: 75.8295 });
-        setIsLocatingUser(false);
-        showToast('Using default bazaar center location', 'info');
-      },
-      { enableHighAccuracy: true, timeout: 6000 }
-    );
+    triggerDeviceLocationAccess();
   };
 
   const handleSelectVendor = (vendor) => {
@@ -693,7 +837,7 @@ export default function App() {
   };
 
   // ==========================================================================
-  // ROLE-SPECIFIC NAVIGATION ITEMS (DIFFERENT MENUS FOR CUSTOMER VS VENDOR)
+  // ROLE-SPECIFIC NAVIGATION ITEMS
   // ==========================================================================
   const navItems = useMemo(() => {
     if (currentRole === 'vendor') {
@@ -710,13 +854,16 @@ export default function App() {
         { id: 'discover', icon: Compass, label: 'Live Stalls View' }
       ];
     }
-    // Customer Mode Navigation
-    return [
+    const customerTabs = [
       { id: 'discover', icon: Compass, label: t('discover') },
       { id: 'offers', icon: Tag, label: t('offers') },
       { id: 'saved', icon: Heart, label: `${t('saved')} (${followedVendorIds.length})` }
     ];
-  }, [currentRole, lang, followedVendorIds.length]);
+    if (session?.role === 'customer') {
+      customerTabs.push({ id: 'customer_profile', icon: Users, label: t('profile') });
+    }
+    return customerTabs;
+  }, [currentRole, lang, followedVendorIds.length, session]);
 
   return (
     <div className="min-h-screen bg-[#FFFDF7] text-slate-900 font-sans selection:bg-amber-300">
@@ -743,7 +890,7 @@ export default function App() {
         }
       >
         <div>
-          {/* ROLE-AWARE TOP ANNOUNCEMENT BAR */}
+          {/* TOP ANNOUNCEMENT BAR */}
           {currentRole === 'vendor' ? (
             <div className="bg-[#2B1B17] text-amber-300 text-[11px] sm:text-xs font-black py-1.5 px-3 text-center border-b border-amber-400/30">
               🛒 VENDOR BUSINESS CONSOLE • Managing: {managingVendor?.name}
@@ -857,11 +1004,346 @@ export default function App() {
           {/* MAIN CONTENT BODY */}
           <main className="max-w-7xl mx-auto px-3 sm:px-6 py-5 pb-24">
             {/* ======================================================== */}
+            {/* CUSTOMER MODE: DISCOVER & SAVED STALLS                   */}
+            {/* ======================================================== */}
+            {(activeTab === 'discover' || activeTab === 'saved') && (
+              <div className="space-y-5">
+                {currentRole === 'vendor' && (
+                  <div className="bg-amber-100 border-2 border-amber-400 p-3 rounded-2xl flex items-center justify-between text-xs font-black text-[#2B1B17]">
+                    <span>👀 You are viewing how customers see live stalls right now.</span>
+                    <button
+                      onClick={() => setActiveTab('vendor_gps')}
+                      className="bg-[#2B1B17] text-amber-300 px-3 py-1.5 rounded-xl"
+                    >
+                      Back to Vendor Console
+                    </button>
+                  </div>
+                )}
+
+                {activeTab === 'discover' && (
+                  <div className="bg-gradient-to-br from-[#2B1B17] via-[#4A2511] to-[#D9381E] rounded-3xl p-5 sm:p-7 text-white border-2 border-[#2B1B17] shadow-xl">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="space-y-1.5 max-w-xl">
+                        <span className="inline-flex items-center gap-1.5 bg-amber-400/20 text-amber-300 border border-amber-300/40 px-3 py-1 rounded-full text-[11px] font-black">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                          {vendors.length} LIVE CARTS BROADCASTING NOW
+                        </span>
+                        <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-amber-300">
+                          {t('heroTitle')}
+                        </h2>
+                        <p className="text-xs sm:text-sm text-amber-100/90 font-medium">
+                          {t('heroSubtitle')}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          onClick={getUserLiveLocation}
+                          disabled={isLocatingUser}
+                          className="bg-amber-400 hover:bg-amber-300 text-[#2B1B17] font-black px-4 py-2.5 rounded-2xl text-xs flex items-center gap-1.5 shadow-lg transition-all"
+                        >
+                          <Crosshair className={`w-4 h-4 ${isLocatingUser ? 'animate-spin' : ''}`} />
+                          <span>{userLocation ? 'GPS Active ✓' : t('useMyLocation')}</span>
+                        </button>
+
+                        <div className="bg-black/30 p-1 rounded-2xl border border-white/15 flex items-center">
+                          <button
+                            onClick={() => setViewMode('list')}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1 ${
+                              viewMode === 'list' ? 'bg-white text-slate-900' : 'text-amber-100'
+                            }`}
+                          >
+                            <List className="w-3.5 h-3.5" />
+                            <span>List</span>
+                          </button>
+                          <button
+                            onClick={() => setViewMode('map')}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1 ${
+                              viewMode === 'map' ? 'bg-white text-slate-900' : 'text-amber-100'
+                            }`}
+                          >
+                            <Map className="w-3.5 h-3.5" />
+                            <span>Radar</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* SEARCH & FILTERS */}
+                    <div className="mt-4 flex flex-col sm:flex-row gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          placeholder={t('searchPlaceholder')}
+                          className="w-full pl-10 pr-4 py-2.5 rounded-2xl bg-white text-slate-900 text-xs font-bold outline-none"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setVegOnlyFilter(!vegOnlyFilter)}
+                          className={`px-3.5 py-2.5 rounded-2xl text-xs font-black border-2 transition-all ${
+                            vegOnlyFilter
+                              ? 'bg-emerald-500 text-slate-950 border-emerald-300'
+                              : 'bg-white/10 text-white border-white/20'
+                          }`}
+                        >
+                          🟢 {t('pureVeg')}
+                        </button>
+
+                        <select
+                          value={sortBy}
+                          onChange={(e) => setSortBy(e.target.value)}
+                          className="px-3 py-2.5 rounded-2xl bg-white text-slate-900 text-xs font-black outline-none"
+                        >
+                          <option value="distance">Nearest First</option>
+                          <option value="freshness">Recently Updated</option>
+                          <option value="rating">Top Rated</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* CATEGORY PILLS */}
+                {activeTab === 'discover' && (
+                  <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+                    {FOOD_CATEGORIES.map((cat) => (
+                      <button
+                        key={cat.name}
+                        onClick={() => setSelectedCategory(cat.name)}
+                        className={`px-3.5 py-2 rounded-2xl text-xs font-black whitespace-nowrap border-2 transition-all flex items-center gap-1.5 ${
+                          selectedCategory === cat.name
+                            ? 'bg-[#2B1B17] text-amber-300 border-[#2B1B17] shadow'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-amber-400'
+                        }`}
+                      >
+                        <span>{cat.emoji}</span>
+                        <span>{cat.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {activeTab === 'saved' && (
+                  <div className="bg-[#2B1B17] text-white p-5 rounded-3xl border-2 border-amber-400">
+                    <h2 className="text-lg font-black text-amber-300">❤️ Your Saved Street Stalls</h2>
+                    <p className="text-xs text-amber-100/80">
+                      Track live locations of your favorite local carts anytime.
+                    </p>
+                  </div>
+                )}
+
+                {/* RADAR VIEW OR CARDS GRID */}
+                {viewMode === 'map' && activeTab === 'discover' ? (
+                  <div className="bg-slate-950 text-white rounded-3xl p-5 border-2 border-amber-400 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-black text-amber-300 flex items-center gap-2">
+                        <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+                        <span>Live Proximity Radar ({processedVendors.length} Stalls)</span>
+                      </h3>
+                      <span className="text-[11px] text-slate-400">Tap any stall to view menu</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {processedVendors.map((v) => (
+                        <div
+                          key={v.id}
+                          onClick={() => handleSelectVendor(v)}
+                          className="p-3.5 rounded-2xl bg-slate-900 border border-amber-400/30 hover:border-amber-400 cursor-pointer flex items-center justify-between gap-2"
+                        >
+                          <div>
+                            <p className="font-black text-xs text-amber-300">{v.name}</p>
+                            <p className="text-[11px] text-slate-300 mt-0.5">{v.landmark}</p>
+                          </div>
+                          <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-1 rounded-xl text-[11px] font-black shrink-0">
+                            {v.distanceKm !== null ? `${v.distanceKm.toFixed(1)} km` : 'LIVE'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : processedVendors.length === 0 ? (
+                  <div className="bg-white rounded-3xl p-8 text-center border border-slate-200 space-y-2">
+                    <p className="text-base font-black text-slate-900">No stalls match this filter right now</p>
+                    <button
+                      onClick={() => {
+                        setSelectedCategory('All');
+                        setVegOnlyFilter(false);
+                        setSearchQuery('');
+                        setActiveTab('discover');
+                      }}
+                      className="bg-[#2B1B17] text-amber-300 text-xs font-black px-4 py-2 rounded-xl"
+                    >
+                      Reset Filters
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {processedVendors.map((vendor) => {
+                      const isSaved = followedVendorIds.includes(vendor.id);
+                      return (
+                        <div
+                          key={vendor.id}
+                          onClick={() => handleSelectVendor(vendor)}
+                          className="bg-white rounded-3xl border-2 border-slate-200 hover:border-[#2B1B17] p-4 shadow-sm hover:shadow-xl transition-all cursor-pointer flex flex-col justify-between gap-3"
+                        >
+                          <div className="space-y-2.5">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span
+                                  className={`text-[10px] font-black px-2.5 py-0.5 rounded-full ${
+                                    vendor.stallOpenStatus === 'Closed Today'
+                                      ? 'bg-red-100 text-red-700'
+                                      : 'bg-emerald-100 text-emerald-800'
+                                  }`}
+                                >
+                                  ● {vendor.stallOpenStatus || 'Here Now'}
+                                </span>
+                                <span className="text-[10px] font-bold text-slate-500">
+                                  {vendor.freshness.text}
+                                </span>
+                              </div>
+
+                              <button
+                                onClick={(e) => toggleFollowVendor(vendor.id, e)}
+                                className={`p-1.5 rounded-full border ${
+                                  isSaved
+                                    ? 'bg-red-50 border-red-200 text-red-600'
+                                    : 'bg-slate-50 border-slate-200 text-slate-400'
+                                }`}
+                              >
+                                <Heart className={`w-4 h-4 ${isSaved ? 'fill-current' : ''}`} />
+                              </button>
+                            </div>
+
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[8px] ${
+                                    vendor.isVeg
+                                      ? 'border-emerald-600 text-emerald-600'
+                                      : 'border-red-600 text-red-600'
+                                  }`}
+                                >
+                                  ●
+                                </span>
+                                <h3 className="font-black text-base text-slate-900 line-clamp-1">
+                                  {vendor.name}
+                                </h3>
+                              </div>
+                              <p className="text-xs text-slate-600 font-semibold flex items-center gap-1 mt-1">
+                                <MapPin className="w-3.5 h-3.5 text-[#D9381E] shrink-0" />
+                                <span className="line-clamp-1">{vendor.landmark}</span>
+                              </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
+                              <span className="bg-amber-100 text-amber-900 px-2.5 py-0.5 rounded-lg flex items-center gap-1">
+                                <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
+                                {vendor.rating}
+                              </span>
+                              <span className="bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-lg">
+                                {vendor.crowdStatus || 'No Wait'}
+                              </span>
+                              {vendor.distanceKm !== null && (
+                                <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-lg">
+                                  {vendor.distanceKm.toFixed(1)} km away
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="bg-amber-50/70 rounded-2xl p-2.5 border border-amber-100 space-y-1">
+                              {(vendor.menu || []).slice(0, 2).map((item, idx) => (
+                                <div key={idx} className="flex justify-between text-xs font-bold">
+                                  <span className="text-slate-700 truncate">{item.name}</span>
+                                  <span className="text-[#D9381E] shrink-0">₹{item.price}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 pt-1">
+                            <button
+                              onClick={(e) => handleShareStall(vendor, e)}
+                              className="px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-black flex items-center gap-1"
+                            >
+                              <Share2 className="w-3.5 h-3.5" />
+                              <span>Share</span>
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleGetDirections(vendor);
+                              }}
+                              className="flex-1 bg-[#2B1B17] hover:bg-[#D9381E] text-amber-300 hover:text-white py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-colors"
+                            >
+                              <Navigation className="w-3.5 h-3.5" />
+                              <span>{t('raastaDekho')}</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ======================================================== */}
+            {/* CUSTOMER MODE: LIVE OFFERS TAB                           */}
+            {/* ======================================================== */}
+            {activeTab === 'offers' && (
+              <div className="space-y-4">
+                <div className="bg-gradient-to-r from-[#D9381E] to-[#F4A900] text-white p-5 rounded-3xl border-2 border-[#2B1B17] shadow-lg">
+                  <h2 className="text-xl font-black">🔥 Today’s Live Street-Food Deals</h2>
+                  <p className="text-xs text-amber-50 mt-0.5">
+                    Show these promo codes directly at the cart counter!
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {allOffers.map((offer) => (
+                    <div
+                      key={offer.id}
+                      className="bg-white p-5 rounded-3xl border-2 border-amber-300 shadow-sm flex flex-col justify-between gap-3"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="bg-[#D9381E] text-white text-[10px] font-black px-2.5 py-1 rounded-full">
+                            {offer.discount}
+                          </span>
+                          <span className="font-mono text-xs font-black bg-amber-100 text-amber-900 px-2.5 py-1 rounded-lg border border-amber-300">
+                            CODE: {offer.code}
+                          </span>
+                        </div>
+                        <h3 className="font-black text-base text-slate-900 mt-2">{offer.title}</h3>
+                        <p className="text-xs text-slate-600 mt-1">{offer.description}</p>
+                        <p className="text-xs font-bold text-[#D9381E] mt-2">
+                          📍 {offer.vendor.name} • {offer.vendor.landmark}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => handleGetDirections(offer.vendor)}
+                        className="w-full bg-[#2B1B17] text-amber-300 font-black py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5"
+                      >
+                        <Navigation className="w-3.5 h-3.5" />
+                        <span>Go to Stall & Claim</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ======================================================== */}
             {/* VENDOR CONSOLE TAB 1: LIVE GPS & RUSH CONTROL            */}
             {/* ======================================================== */}
             {currentRole === 'vendor' && activeTab === 'vendor_gps' && managingVendor && (
               <div className="space-y-5">
-                {/* VENDOR STALL HEADER CARD */}
                 <div className="bg-white p-4 sm:p-5 rounded-3xl border-2 border-slate-900 shadow-sm flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <span className="text-[11px] font-black text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-full">
@@ -877,7 +1359,6 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* STALL OPEN / MOVING / CLOSED TOGGLE */}
                   <div className="flex flex-wrap gap-1.5">
                     {['Here Now', 'Moving Soon', 'Closed Today'].map((st) => (
                       <button
@@ -947,22 +1428,19 @@ export default function App() {
                       { label: 'No Wait', hi: 'खाली है (0 min)' },
                       { label: 'Thodi Bheed', hi: 'थोड़ी भीड़ (5 min)' },
                       { label: 'Full Rush', hi: 'फुल भीड़ (15 min)' }
-                    ].map((item) => {
-                      const active = (managingVendor.crowdStatus || 'No Wait') === item.label;
-                      return (
-                        <button
-                          key={item.label}
-                          onClick={() => handleUpdateCrowdStatus(item.label)}
-                          className={`py-3 px-2 rounded-2xl text-xs font-black border-2 transition-all ${
-                            active
-                              ? 'bg-[#2B1B17] text-amber-300 border-amber-400 shadow'
-                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-amber-300'
-                          }`}
-                        >
-                          {lang === 'HI' ? item.hi : item.label}
-                        </button>
-                      );
-                    })}
+                    ].map((opt) => (
+                      <button
+                        key={opt.label}
+                        onClick={() => handleUpdateCrowdStatus(opt.label)}
+                        className={`p-3 rounded-2xl border-2 text-xs font-black transition-all ${
+                          (managingVendor.crowdStatus || 'No Wait') === opt.label
+                            ? 'bg-[#2B1B17] text-amber-300 border-[#2B1B17]'
+                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-amber-400'
+                        }`}
+                      >
+                        {lang === 'HI' ? opt.hi : opt.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -972,535 +1450,213 @@ export default function App() {
             {/* VENDOR CONSOLE TAB 2: MENU & OFFERS MANAGER              */}
             {/* ======================================================== */}
             {currentRole === 'vendor' && activeTab === 'vendor_menu' && managingVendor && (
-              <div className={isMobileFrame ? 'grid grid-cols-1 gap-4' : 'grid grid-cols-1 lg:grid-cols-2 gap-6'}>
-                {/* MENU MANAGER */}
-                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
-                  <h3 className="font-black text-base text-slate-900 flex items-center gap-2">
-                    <Utensils className="w-4 h-4 text-[#D9381E]" />
-                    <span>{lang === 'HI' ? 'मेनू और रेट अपडेट करें' : 'Manage Live Menu & ₹ Pricing'}</span>
-                  </h3>
-                  <form onSubmit={handleAddMenuItem} className="flex gap-2">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                  <h3 className="font-black text-base text-slate-900">🍲 Live Stall Menu & Prices</h3>
+                  <form onSubmit={handleAddMenuItem} className="flex gap-2 text-xs">
                     <input
                       type="text"
                       required
-                      placeholder="Dish name (e.g. Paneer Momos)"
+                      placeholder="Dish name (e.g. Dahi Puri)"
                       value={newMenuItemName}
                       onChange={(e) => setNewMenuItemName(e.target.value)}
-                      className="flex-1 p-2.5 border border-slate-300 rounded-xl text-xs outline-none focus:border-amber-500"
+                      className="flex-1 p-2.5 border border-slate-300 rounded-xl font-bold outline-none"
                     />
                     <input
                       type="number"
                       required
-                      min="1"
                       placeholder="₹ Price"
                       value={newMenuItemPrice}
                       onChange={(e) => setNewMenuItemPrice(e.target.value)}
-                      className="w-24 p-2.5 border border-slate-300 rounded-xl text-xs outline-none focus:border-amber-500"
+                      className="w-24 p-2.5 border border-slate-300 rounded-xl font-bold outline-none"
                     />
-                    <button type="submit" className="bg-[#2B1B17] text-amber-300 font-black px-3.5 rounded-xl text-xs">
-                      + Add
+                    <button
+                      type="submit"
+                      className="bg-[#2B1B17] text-amber-300 font-black px-3.5 rounded-xl flex items-center gap-1"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Add</span>
                     </button>
                   </form>
-                  <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+
+                  <div className="space-y-2 text-xs">
                     {(managingVendor.menu || []).map((item, idx) => (
                       <div
                         key={idx}
-                        className="flex items-center justify-between bg-amber-50/70 px-3 py-2.5 rounded-xl border border-amber-100 text-xs"
+                        className="flex items-center justify-between p-3 rounded-2xl bg-amber-50 border border-amber-200 font-bold"
                       >
-                        <span className="font-bold text-slate-800">{item.name}</span>
-                        <div className="flex items-center gap-3">
-                          <span className="font-black text-[#D9381E]">₹{item.price}</span>
-                          <button
-                            onClick={() => handleRemoveMenuItem(idx)}
-                            className="text-slate-400 hover:text-red-600"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        <span>
+                          {item.name} — <strong className="text-[#D9381E]">₹{item.price}</strong>
+                        </span>
+                        <button
+                          onClick={() => handleRemoveMenuItem(idx)}
+                          className="text-red-500 hover:bg-red-100 p-1.5 rounded-lg"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* OFFERS PUBLISHER */}
-                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
-                  <h3 className="font-black text-base text-slate-900 flex items-center gap-2">
-                    <Tag className="w-4 h-4 text-[#D9381E]" />
-                    <span>{lang === 'HI' ? 'नया ऑफर पब्लिश करें' : 'Publish Live Stall Offer'}</span>
-                  </h3>
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                  <h3 className="font-black text-base text-slate-900">🎁 Publish Live Offer</h3>
                   <form onSubmit={handlePublishOffer} className="space-y-2.5 text-xs">
-                    <div className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Offer Headline (e.g. 2 Golgappe Extra Free)"
+                      value={newOfferTitle}
+                      onChange={(e) => setNewOfferTitle(e.target.value)}
+                      className="w-full p-2.5 border border-slate-300 rounded-xl font-bold outline-none"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
                       <input
                         type="text"
                         required
-                        placeholder="Offer Title (e.g. Evening Chai Combo)"
-                        value={newOfferTitle}
-                        onChange={(e) => setNewOfferTitle(e.target.value)}
-                        className="flex-1 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
-                      />
-                      <input
-                        type="text"
-                        required
-                        placeholder="20% OFF / ₹10 OFF"
+                        placeholder="Badge (e.g. ₹20 OFF)"
                         value={newOfferDiscount}
                         onChange={(e) => setNewOfferDiscount(e.target.value)}
-                        className="w-28 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
+                        className="w-full p-2.5 border border-slate-300 rounded-xl font-bold outline-none"
                       />
-                    </div>
-                    <div className="flex gap-2">
                       <input
                         type="text"
-                        placeholder="Code (e.g. CHAI20)"
+                        placeholder="Code (e.g. FREE2)"
                         value={newOfferCode}
                         onChange={(e) => setNewOfferCode(e.target.value)}
-                        className="w-32 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500 uppercase"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Short details..."
-                        value={newOfferDesc}
-                        onChange={(e) => setNewOfferDesc(e.target.value)}
-                        className="flex-1 p-2.5 border border-slate-300 rounded-xl outline-none focus:border-amber-500"
+                        className="w-full p-2.5 border border-slate-300 rounded-xl font-bold outline-none"
                       />
                     </div>
+                    <input
+                      type="text"
+                      placeholder="Short condition (Optional)"
+                      value={newOfferDesc}
+                      onChange={(e) => setNewOfferDesc(e.target.value)}
+                      className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
+                    />
                     <button
                       type="submit"
-                      className="w-full bg-[#D9381E] hover:bg-red-700 text-white font-black py-3 rounded-xl shadow"
+                      className="w-full bg-[#D9381E] text-white font-black py-3 rounded-2xl shadow"
                     >
-                      {lang === 'HI' ? 'ऑफर लाइव करें' : 'Publish Offer Live'}
+                      Publish Offer Now
                     </button>
                   </form>
-
-                  {/* ACTIVE VENDOR OFFERS */}
-                  <div className="space-y-2 pt-2">
-                    {(managingVendor.offers || []).map((o) => (
-                      <div key={o.id} className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs flex justify-between items-center">
-                        <div>
-                          <p className="font-black text-slate-900">{o.title}</p>
-                          <p className="text-slate-600">{o.discount} • Code: {o.code}</p>
-                        </div>
-                        <span className="text-[10px] font-black bg-emerald-600 text-white px-2 py-0.5 rounded-full">LIVE</span>
-                      </div>
-                    ))}
-                  </div>
                 </div>
               </div>
             )}
 
             {/* ======================================================== */}
-            {/* VENDOR CONSOLE TAB 3: ANALYTICS & SUBSCRIPTION PLAN      */}
+            {/* VENDOR CONSOLE TAB 3: ANALYTICS & PLAN                   */}
             {/* ======================================================== */}
             {currentRole === 'vendor' && activeTab === 'vendor_stats' && managingVendor && (
               <div className="space-y-5">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                    <p className="text-xs font-bold text-slate-500">Total Profile Views</p>
-                    <p className="text-3xl font-black text-slate-900 mt-1">{managingVendor.profileViews || 0}</p>
-                    <p className="text-[11px] font-bold text-emerald-600 mt-1">+18% this week</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-white p-4 rounded-3xl border border-slate-200 text-center">
+                    <p className="text-2xl font-black text-slate-900">{managingVendor.profileViews || 0}</p>
+                    <p className="text-[11px] font-bold text-slate-500 mt-1">Profile Views</p>
                   </div>
-                  <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                    <p className="text-xs font-bold text-slate-500">Directions Requested (Raasta Dekho)</p>
-                    <p className="text-3xl font-black text-[#D9381E] mt-1">{managingVendor.directionRequests || 0}</p>
-                    <p className="text-[11px] font-bold text-slate-500 mt-1">High-intent nearby foodies</p>
+                  <div className="bg-white p-4 rounded-3xl border border-slate-200 text-center">
+                    <p className="text-2xl font-black text-[#D9381E]">
+                      {managingVendor.directionRequests || 0}
+                    </p>
+                    <p className="text-[11px] font-bold text-slate-500 mt-1">Directions Clicked</p>
                   </div>
-                  <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                    <p className="text-xs font-bold text-slate-500">Loyal Followers</p>
-                    <p className="text-3xl font-black text-amber-600 mt-1">{managingVendor.followersCount || 0}</p>
-                    <p className="text-[11px] font-bold text-slate-500 mt-1">Notified when you go live</p>
+                  <div className="bg-white p-4 rounded-3xl border border-slate-200 text-center">
+                    <p className="text-2xl font-black text-emerald-600">
+                      {managingVendor.followersCount || 0}
+                    </p>
+                    <p className="text-[11px] font-bold text-slate-500 mt-1">Saved Followers</p>
                   </div>
                 </div>
 
-                <div className="bg-[#2B1B17] text-white p-6 rounded-3xl border-2 border-amber-400 flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <span className="bg-emerald-500 text-slate-950 text-[10px] font-black px-3 py-1 rounded-full">
-                      ACTIVE SUBSCRIPTION
-                    </span>
-                    <h3 className="text-xl font-black text-amber-300 mt-2">
-                      {managingVendor.planType === 'FOUNDER_10'
-                        ? 'Founding Stall Plan — 3 Months FREE (₹0)'
-                        : 'Standard Vendor Plan — ₹399 / Month'}
-                    </h3>
-                    <p className="text-xs text-amber-100/80 mt-1">
-                      Includes unlimited daily GPS broadcasts, live menu updates, and promotional offer badges.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* ======================================================== */}
-            {/* CUSTOMER MODE (AND VENDOR CUSTOMER-PREVIEW): DISCOVER/SAVED*/}
-            {/* ======================================================== */}
-            {(activeTab === 'discover' || activeTab === 'saved') && (
-              <div className="space-y-4">
-                {currentRole === 'vendor' && (
-                  <div className="bg-amber-100 border-2 border-amber-400 p-3 rounded-2xl flex items-center justify-between text-xs font-black text-[#2B1B17]">
-                    <span>👀 Customer Preview Mode — This is how foodies see your stall!</span>
-                    <button
-                      onClick={() => setActiveTab('vendor_gps')}
-                      className="bg-[#2B1B17] text-amber-300 px-3 py-1.5 rounded-xl"
-                    >
-                      Back to Vendor Console
-                    </button>
-                  </div>
-                )}
-
-                {/* HERO BANNER (SHOWN ON DISCOVER) */}
-                {activeTab === 'discover' && (
-                  <div className="bg-gradient-to-br from-[#2B1B17] via-[#4A2511] to-[#D9381E] rounded-3xl p-4 sm:p-6 text-white shadow-xl border-2 border-amber-400/40 relative overflow-hidden">
-                    <div className="relative z-10 space-y-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="bg-amber-400 text-slate-950 text-[10px] sm:text-xs font-black px-3 py-1 rounded-full uppercase tracking-wider">
-                          {lang === 'HI' ? '● लाइव स्ट्रीट फूड रडार' : '● LIVE STREET FOOD RADAR'}
-                        </span>
-                        <button
-                          onClick={getUserLiveLocation}
-                          disabled={isLocatingUser}
-                          className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-md transition-all"
-                        >
-                          <Crosshair className={`w-3.5 h-3.5 ${isLocatingUser ? 'animate-spin' : ''}`} />
-                          <span>
-                            {userLocation ? (lang === 'HI' ? 'लोकेशन एक्टिव' : 'GPS Active') : t('useMyLocation')}
-                          </span>
-                        </button>
-                      </div>
-
-                      <div>
-                        <h2 className="text-xl sm:text-3xl font-black tracking-tight text-amber-300">
-                          {t('heroTitle')}
-                        </h2>
-                        <p className="text-xs sm:text-sm text-amber-100/90 mt-0.5">{t('heroSubtitle')}</p>
-                      </div>
-
-                      {/* SEARCH BAR + QUICK FILTER TOGGLES */}
-                      <div className="flex flex-col sm:flex-row gap-2 pt-1">
-                        <div className="relative flex-1">
-                          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="text"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder={t('searchPlaceholder')}
-                            className="w-full pl-10 pr-4 py-2.5 rounded-2xl bg-white text-slate-900 placeholder-slate-400 text-xs sm:text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-400"
-                          />
-                        </div>
-
-                        <div className="flex gap-2 justify-between sm:justify-start">
-                          <button
-                            onClick={() => setVegOnlyFilter(!vegOnlyFilter)}
-                            className={`px-3 py-2.5 rounded-2xl text-xs font-black flex items-center gap-1.5 border transition-all ${
-                              vegOnlyFilter
-                                ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg'
-                                : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
-                            }`}
-                          >
-                            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                            <span>{t('pureVeg')}</span>
-                          </button>
-
-                          <div className="bg-black/30 p-1 rounded-2xl flex items-center border border-white/20">
-                            <button
-                              onClick={() => setViewMode('list')}
-                              className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 ${
-                                viewMode === 'list' ? 'bg-amber-400 text-slate-900' : 'text-white/80'
-                              }`}
-                            >
-                              <List className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => setViewMode('map')}
-                              className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 ${
-                                viewMode === 'map' ? 'bg-amber-400 text-slate-900' : 'text-white/80'
-                              }`}
-                            >
-                              <Map className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === 'saved' && (
-                  <div className="bg-[#2B1B17] text-white p-5 rounded-3xl border-2 border-amber-400">
-                    <h2 className="text-xl font-black text-amber-300 flex items-center gap-2">
-                      <Heart className="w-5 h-5 fill-red-500 text-red-500" />
-                      <span>{lang === 'HI' ? 'आपके पसंदीदा ठेले' : 'Your Saved & Followed Stalls'}</span>
-                    </h2>
-                    <p className="text-xs text-amber-100/80 mt-1">
-                      Track live locations of your favorite street-food vendors in one place.
-                    </p>
-                  </div>
-                )}
-
-                {/* CATEGORY PILLS & SORT BAR */}
-                {activeTab === 'discover' && (
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar flex-1">
-                      {FOOD_CATEGORIES.map((cat) => (
-                        <button
-                          key={cat.name}
-                          onClick={() => setSelectedCategory(cat.name)}
-                          className={`px-3.5 py-2 rounded-2xl text-xs font-black whitespace-nowrap flex items-center gap-1.5 border transition-all ${
-                            selectedCategory === cat.name
-                              ? 'bg-[#2B1B17] text-amber-300 border-amber-400 shadow-md'
-                              : 'bg-white text-slate-700 border-amber-200 hover:border-amber-400'
-                          }`}
-                        >
-                          <span>{cat.emoji}</span>
-                          <span>{cat.name}</span>
-                        </button>
-                      ))}
-                    </div>
-
-                    <select
-                      value={sortBy}
-                      onChange={(e) => setSortBy(e.target.value)}
-                      className="hidden sm:block bg-white border border-amber-200 rounded-2xl px-3 py-2 text-xs font-black text-slate-700 outline-none"
-                    >
-                      <option value="distance">Sort: Nearest</option>
-                      <option value="freshness">Sort: Just Updated</option>
-                      <option value="rating">Sort: Top Rated</option>
-                    </select>
-                  </div>
-                )}
-
-                {/* MAP OR LIST VIEW */}
-                {viewMode === 'map' && activeTab === 'discover' ? (
-                  <div className="bg-white rounded-3xl border border-amber-200 p-4 shadow-md space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-black text-sm text-slate-900 flex items-center gap-1.5">
-                        <Compass className="w-4 h-4 text-[#D9381E]" />
-                        <span>{lang === 'HI' ? 'लाइव स्ट्रीट मैप व्यू' : 'Live Street Bazaar Radar'}</span>
-                      </h3>
-                      <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full">
-                        {processedVendors.length} Live Stalls
-                      </span>
-                    </div>
-                    <div className="relative h-72 sm:h-96 rounded-2xl bg-gradient-to-br from-amber-100 via-orange-50 to-emerald-50 border-2 border-dashed border-amber-300 overflow-hidden p-4 flex flex-wrap gap-3 items-center justify-center">
-                      {processedVendors.map((v) => (
-                        <button
-                          key={v.id}
-                          onClick={() => handleSelectVendor(v)}
-                          className="bg-white hover:bg-amber-50 border-2 border-[#2B1B17] px-3 py-2 rounded-2xl shadow-md flex items-center gap-2 text-left transition-transform hover:scale-105"
-                        >
-                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
-                          <div>
-                            <p className="text-xs font-black text-slate-900">{v.name}</p>
-                            <p className="text-[10px] text-slate-500">{v.landmark}</p>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    className={
-                      isMobileFrame
-                        ? 'grid grid-cols-1 gap-4'
-                        : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5'
-                    }
-                  >
-                    {processedVendors.length === 0 ? (
-                      <div className="col-span-full bg-white p-10 rounded-3xl text-center border-2 border-dashed border-slate-200">
-                        <Store className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-                        <h3 className="text-lg font-bold text-slate-700">Koi stall nahi mila!</h3>
-                        <p className="text-sm text-slate-500 mb-4">
-                          Try clearing your search query or saving stalls using the heart icon.
-                        </p>
-                        <button
-                          onClick={() => {
-                            setSearchQuery('');
-                            setSelectedCategory('All');
-                            setVegOnlyFilter(false);
-                            setActiveTab('discover');
-                          }}
-                          className="bg-amber-500 text-slate-900 px-4 py-2 rounded-xl text-xs font-bold"
-                        >
-                          Browse All Stalls
-                        </button>
-                      </div>
-                    ) : (
-                      processedVendors.map((vendor) => (
-                        <div
-                          key={vendor.id}
-                          onClick={() => handleSelectVendor(vendor)}
-                          className="bg-white rounded-3xl border border-amber-100 shadow-md hover:shadow-xl transition-all cursor-pointer flex flex-col justify-between overflow-hidden group border-b-4 border-b-amber-500 active:scale-[0.99]"
-                        >
-                          <div className="p-4 sm:p-5">
-                            <div className="flex items-center justify-between gap-1.5 mb-2.5">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span
-                                  className={`text-[10px] sm:text-[11px] px-2.5 py-1 rounded-full font-bold flex items-center gap-1 ${
-                                    vendor.freshness.level === 'fresh'
-                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                      : 'bg-amber-100 text-amber-800 border border-amber-300'
-                                  }`}
-                                >
-                                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                                  {vendor.freshness.text}
-                                </span>
-
-                                <span
-                                  className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                                    vendor.crowdStatus === 'Full Rush'
-                                      ? 'bg-red-100 text-red-700'
-                                      : vendor.crowdStatus === 'Thodi Bheed'
-                                      ? 'bg-amber-100 text-amber-800'
-                                      : 'bg-sky-100 text-sky-700'
-                                  }`}
-                                >
-                                  {vendor.crowdStatus || 'No Wait'}
-                                </span>
-                              </div>
-
-                              <div className="flex items-center gap-0.5 shrink-0">
-                                <button
-                                  onClick={(e) => handleShareStall(vendor, e)}
-                                  className="text-emerald-600 hover:bg-emerald-50 p-1.5 rounded-full transition-colors"
-                                  title="Share on WhatsApp"
-                                >
-                                  <Share2 className="w-4 h-4" />
-                                </button>
-                                <button
-                                  onClick={(e) => toggleFollowVendor(vendor.id, e)}
-                                  className="text-red-500 hover:scale-125 transition-transform p-1"
-                                  title="Save Stall"
-                                >
-                                  <Heart
-                                    className={`w-5 h-5 ${
-                                      followedVendorIds.includes(vendor.id)
-                                        ? 'fill-red-500 text-red-500'
-                                        : 'text-slate-300'
-                                    }`}
-                                  />
-                                </button>
-                              </div>
-                            </div>
-
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <h3 className="text-base sm:text-lg font-black text-slate-900 group-hover:text-[#D9381E] transition-colors">
-                                  {vendor.name}
-                                </h3>
-                                <p className="text-xs text-slate-500 font-semibold">
-                                  {vendor.category} • {vendor.ownerName}
-                                </p>
-                              </div>
-                              <div className="bg-amber-100 text-amber-900 px-2 py-1 rounded-xl text-xs font-black flex items-center gap-1 shrink-0">
-                                <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
-                                <span>{vendor.rating || '4.8'}</span>
-                              </div>
-                            </div>
-
-                            <div className="mt-3 p-2.5 rounded-2xl bg-amber-50/80 border border-amber-200/70 flex items-start gap-2">
-                              <MapPin className="w-4 h-4 text-[#D9381E] shrink-0 mt-0.5" />
-                              <div className="text-xs">
-                                <p className="font-bold text-slate-800">{vendor.landmark}</p>
-                                {vendor.distanceKm !== null && (
-                                  <p className="text-[11px] font-bold text-emerald-700 mt-0.5">
-                                    {vendor.distanceKm < 1
-                                      ? `${Math.round(vendor.distanceKm * 1000)}m away`
-                                      : `${vendor.distanceKm.toFixed(1)} km away`}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-
-                            {vendor.menu && vendor.menu.length > 0 && (
-                              <div className="mt-3 flex flex-wrap gap-1.5">
-                                {vendor.menu.slice(0, 3).map((item, i) => (
-                                  <span
-                                    key={i}
-                                    className="text-[11px] bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg font-bold"
-                                  >
-                                    {item.name} • <span className="text-[#D9381E]">₹{item.price}</span>
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="px-4 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2">
-                            <span className="text-[11px] font-bold text-slate-500">
-                              {vendor.followersCount || 0} {lang === 'HI' ? 'फ़ॉलोअर्स' : 'Followers'}
-                            </span>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleGetDirections(vendor);
-                              }}
-                              className="bg-[#2B1B17] hover:bg-[#D9381E] text-amber-300 hover:text-white text-xs font-black px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-colors shadow"
-                            >
-                              <Navigation className="w-3.5 h-3.5" />
-                              <span>{t('raastaDekho')}</span>
-                            </button>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ======================================================== */}
-            {/* CUSTOMER MODE: OFFERS & DEALS                            */}
-            {/* ======================================================== */}
-            {activeTab === 'offers' && (
-              <div className="space-y-4">
-                <div className="bg-[#2B1B17] text-white p-5 rounded-3xl border-2 border-amber-400">
-                  <h2 className="text-xl font-black text-amber-300 flex items-center gap-2">
-                    <Tag className="w-5 h-5" />
-                    <span>{lang === 'HI' ? 'आज के धमाकेदार स्ट्रीट ऑफर्स' : 'Live Street Food Offers'}</span>
-                  </h2>
+                <div className="bg-[#2B1B17] text-white p-6 rounded-3xl border-2 border-amber-400">
+                  <span className="bg-emerald-500 text-slate-950 text-[10px] font-black px-3 py-1 rounded-full">
+                    ACTIVE SUBSCRIPTION
+                  </span>
+                  <h3 className="text-xl font-black text-amber-300 mt-2">
+                    {managingVendor.planType === 'FOUNDER_10'
+                      ? 'Founding Stall Plan — 3 Months FREE (₹0)'
+                      : 'Standard Vendor Plan — ₹399 / Month'}
+                  </h3>
                   <p className="text-xs text-amber-100/80 mt-1">
-                    Show coupon code directly at the live stall
+                    Includes unlimited daily GPS broadcasts, live menu updates, and promotional offer badges.
+                  </p>
+                  <p className="text-[11px] text-amber-300/90 mt-2 font-bold">
+                    💳 Online Payment Gateway (UPI / Card) — Baad mein add karenge (abhi trial/founding free active hai).
                   </p>
                 </div>
+              </div>
+            )}
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {allOffers.length === 0 ? (
-                    <div className="col-span-full bg-white p-8 rounded-3xl text-center text-xs font-bold text-slate-500 border border-slate-200">
-                      No active offers right now. Check back soon!
+            {/* ======================================================== */}
+            {/* CUSTOMER MODE: MY PROFILE & GPS SETTINGS                 */}
+            {/* ======================================================== */}
+            {currentRole === 'customer' && activeTab === 'customer_profile' && session && (
+              <div className="max-w-xl mx-auto space-y-4">
+                <div className="bg-[#2B1B17] text-white p-6 rounded-3xl border-2 border-amber-400 shadow-lg flex items-center justify-between gap-3">
+                  <div>
+                    <span className="bg-emerald-500 text-slate-950 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
+                      VERIFIED FOODIE PROFILE
+                    </span>
+                    <h2 className="text-2xl font-black text-amber-300 mt-1.5">
+                      {session.fullName || session.contact}
+                    </h2>
+                    <p className="text-xs text-amber-100/80 mt-0.5">
+                      📱 +91 {session.phone} • 📍 {session.area || 'Jaipur'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="bg-red-600 hover:bg-red-700 text-white text-xs font-black px-3.5 py-2 rounded-xl flex items-center gap-1.5"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Logout</span>
+                  </button>
+                </div>
+
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-4 text-xs">
+                  <div className="flex items-center justify-between p-3.5 rounded-2xl bg-amber-50 border border-amber-200">
+                    <div>
+                      <p className="font-black text-slate-900">Live GPS Location Access</p>
+                      <p className="text-slate-600 mt-0.5">
+                        {userLocation
+                          ? `Active (${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)})`
+                          : 'GPS not enabled yet — enable to see exact distance to carts'}
+                      </p>
                     </div>
-                  ) : (
-                    allOffers.map((offer, idx) => (
-                      <div
-                        key={idx}
-                        className="bg-white p-5 rounded-3xl border-2 border-dashed border-[#D9381E] shadow-sm flex flex-col justify-between gap-3"
-                      >
-                        <div>
-                          <div className="flex items-center justify-between">
-                            <span className="bg-red-100 text-[#D9381E] text-xs font-black px-3 py-1 rounded-full">
-                              {offer.discount}
-                            </span>
-                            <span className="text-xs font-mono font-black bg-amber-100 text-slate-900 px-2.5 py-1 rounded-lg border border-amber-300">
-                              CODE: {offer.code}
-                            </span>
-                          </div>
-                          <h3 className="text-base font-black text-slate-900 mt-2">{offer.title}</h3>
-                          <p className="text-xs text-slate-600 mt-1">{offer.description}</p>
-                        </div>
-                        <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-xs font-bold text-slate-700">{offer.vendor.name}</span>
-                          <button
-                            onClick={() => handleSelectVendor(offer.vendor)}
-                            className="text-xs font-black text-[#D9381E] hover:underline"
-                          >
-                            View Stall →
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
+                    <button
+                      onClick={getUserLiveLocation}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3.5 py-2 rounded-xl flex items-center gap-1.5 shrink-0"
+                    >
+                      <Crosshair className="w-3.5 h-3.5" />
+                      <span>{userLocation ? 'Refresh GPS' : 'Allow GPS'}</span>
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
+                    <div>
+                      <p className="font-black text-slate-900">Pure Veg Only Filter</p>
+                      <p className="text-slate-600 mt-0.5">Show only 100% vegetarian stalls</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const nextVeg = !vegOnlyFilter;
+                        setVegOnlyFilter(nextVeg);
+                        showToast(nextVeg ? 'Pure Veg mode ON' : 'Showing All Stalls', 'info');
+                      }}
+                      className={`px-3.5 py-2 rounded-xl font-black ${
+                        vegOnlyFilter ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {vegOnlyFilter ? 'ON (Pure Veg)' : 'OFF (All Food)'}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
 
             {/* ======================================================== */}
-            {/* ADMIN MODE: GOVERNANCE & SUBSCRIPTIONS                   */}
+            {/* ADMIN MODE                                               */}
             {/* ======================================================== */}
             {currentRole === 'admin' && activeTab === 'admin' && (
               <div className="space-y-4">
@@ -1538,7 +1694,7 @@ export default function App() {
           </main>
         </div>
 
-        {/* MOBILE ROLE-SPECIFIC BOTTOM NAVIGATION BAR */}
+        {/* MOBILE BOTTOM NAVIGATION BAR */}
         <nav
           className={`${
             isMobileFrame ? 'sticky bottom-0' : 'md:hidden fixed bottom-0 left-0 right-0'
@@ -1572,7 +1728,7 @@ export default function App() {
         <span>{isMobileFrame ? 'Desktop Full View' : 'Phone App View'}</span>
       </button>
 
-      {/* UNIFIED ROLE & AUTH MODAL (SEPARATE CUSTOMER VS VENDOR FLOWS) */}
+      {/* UNIFIED ROLE & AUTH MODAL */}
       {showRoleModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-3">
           <div className="bg-white w-full max-w-md rounded-3xl border-2 border-[#2B1B17] p-5 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -1581,7 +1737,7 @@ export default function App() {
                 {roleModalView === 'choose'
                   ? 'Select Your KHAOZI Mode'
                   : roleModalView === 'customer_login'
-                  ? 'Customer Login'
+                  ? 'Customer Login & OTP'
                   : roleModalView === 'vendor_login'
                   ? 'Vendor Stall Login'
                   : 'Register New Street Stall'}
@@ -1599,7 +1755,7 @@ export default function App() {
                 >
                   <p className="font-black text-sm text-slate-900">🍔 Customer Mode (Foodie)</p>
                   <p className="text-xs text-slate-600 mt-0.5">
-                    Browse live stalls, unlock GPS distance, save favorites & claim offers.
+                    Verify mobile OTP, allow live GPS location, save favorites & get directions.
                   </p>
                 </button>
 
@@ -1637,21 +1793,75 @@ export default function App() {
             {roleModalView === 'customer_login' && (
               <form onSubmit={handleCustomerLogin} className="space-y-3 text-xs">
                 <p className="text-slate-600">
-                  Enter your mobile number or email to unlock live GPS distance and Google Maps directions.
+                  Apna naam, mobile number aur OTP verify karein aur live location access allow karein.
                 </p>
                 <input
                   type="text"
                   required
-                  placeholder="Mobile Number or Email"
-                  value={authInput}
-                  onChange={(e) => setAuthInput(e.target.value)}
+                  placeholder="Your Full Name (e.g. Aman Verma)"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
                   className="w-full p-3 border border-slate-300 rounded-xl font-bold outline-none focus:border-amber-500"
                 />
+                <div className="flex gap-2">
+                  <input
+                    type="tel"
+                    required
+                    maxLength={10}
+                    placeholder="10-Digit Mobile Number"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    className="flex-1 p-3 border border-slate-300 rounded-xl font-bold outline-none focus:border-amber-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={triggerCustomerOtp}
+                    className="bg-amber-400 hover:bg-amber-300 text-slate-950 font-black px-3.5 rounded-xl shrink-0"
+                  >
+                    {otpSentCode ? 'Resend OTP' : 'Send OTP'}
+                  </button>
+                </div>
+
+                {otpSentCode && (
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      maxLength={4}
+                      required
+                      placeholder="Enter 4-digit OTP"
+                      value={otpInput}
+                      onChange={(e) => setOtpInput(e.target.value)}
+                      className="w-full p-3 border-2 border-emerald-500 rounded-xl font-black tracking-widest text-center outline-none"
+                    />
+                    <p className="text-[11px] text-emerald-700 font-bold">
+                      Demo OTP: {otpSentCode}
+                    </p>
+                  </div>
+                )}
+
+                <input
+                  type="text"
+                  placeholder="Area / Chowk (e.g. Raja Park, Jaipur)"
+                  value={customerArea}
+                  onChange={(e) => setCustomerArea(e.target.value)}
+                  className="w-full p-3 border border-slate-300 rounded-xl font-semibold outline-none focus:border-amber-500"
+                />
+
+                <label className="flex items-center gap-2 font-bold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={customerLocationConsent}
+                    onChange={(e) => setCustomerLocationConsent(e.target.checked)}
+                    className="accent-emerald-600"
+                  />
+                  Allow GPS Location Access to show nearby carts
+                </label>
+
                 <button
                   type="submit"
                   className="w-full bg-[#2B1B17] text-amber-300 font-black py-3 rounded-2xl shadow-lg"
                 >
-                  Continue as Customer →
+                  Verify OTP & Allow Location →
                 </button>
               </form>
             )}
@@ -1659,21 +1869,56 @@ export default function App() {
             {roleModalView === 'vendor_login' && (
               <form onSubmit={handleVendorPhoneLogin} className="space-y-3 text-xs">
                 <p className="text-slate-600">
-                  Enter your registered stall mobile number (try <strong>9876543210</strong> for demo) to open your Vendor Business Console.
+                  Registered mobile number (demo: <strong>9876543210</strong>) daalein aur OTP verify karein.
                 </p>
-                <input
-                  type="tel"
-                  required
-                  placeholder="Registered Mobile Number"
-                  value={vendorLoginPhone}
-                  onChange={(e) => setVendorLoginPhone(e.target.value)}
-                  className="w-full p-3 border border-slate-300 rounded-xl font-bold outline-none focus:border-amber-500"
-                />
+                <div className="flex gap-2">
+                  <input
+                    type="tel"
+                    required
+                    maxLength={10}
+                    placeholder="Registered 10-Digit Mobile"
+                    value={vendorLoginPhone}
+                    onChange={(e) => setVendorLoginPhone(e.target.value)}
+                    className="flex-1 p-3 border border-slate-300 rounded-xl font-bold outline-none focus:border-amber-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSendVendorLoginOtp}
+                    className="px-3.5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black whitespace-nowrap"
+                  >
+                    {vendorLoginOtpSent ? 'Resend OTP' : 'Send OTP'}
+                  </button>
+                </div>
+
+                {vendorLoginOtpSent && (
+                  <div className="bg-amber-50 border border-amber-300 p-3 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-amber-900">
+                      <span>Enter Vendor OTP</span>
+                      <span className="font-mono bg-white px-2 py-0.5 rounded border border-amber-200">
+                        Demo OTP: {vendorLoginOtpSent}
+                      </span>
+                    </div>
+                    <input
+                      type="text"
+                      maxLength={4}
+                      required
+                      placeholder="4-digit OTP"
+                      value={vendorLoginOtpInput}
+                      onChange={(e) => setVendorLoginOtpInput(e.target.value)}
+                      className="w-full p-2.5 border border-amber-400 bg-white rounded-xl font-mono text-sm font-black tracking-widest outline-none"
+                    />
+                  </div>
+                )}
+
+                <div className="p-2.5 rounded-xl bg-slate-100 text-slate-600 text-[11px] font-semibold">
+                  💳 Payment Option: Baad mein add karenge (abhi trial/founding free active hai).
+                </div>
+
                 <button
                   type="submit"
                   className="w-full bg-[#D9381E] text-white font-black py-3 rounded-2xl shadow-lg"
                 >
-                  Open Vendor Business Console →
+                  Verify OTP & Open Vendor Console →
                 </button>
               </form>
             )}
@@ -1683,7 +1928,7 @@ export default function App() {
                 <div className="bg-amber-100 border border-amber-400 p-2.5 rounded-xl font-black text-[#2B1B17]">
                   {foundingSlotsRemaining > 0
                     ? `🎁 Founding Offer: ${foundingSlotsRemaining}/10 Free Slots Left (3 Mo ₹0)`
-                    : '💼 Standard Plan: ₹399/month'}
+                    : '💼 Standard Plan: ₹399/month (Payment option baad mein add hoga)'}
                 </div>
                 <input
                   type="text"
@@ -1705,12 +1950,41 @@ export default function App() {
                   <input
                     type="tel"
                     required
-                    placeholder="Mobile Number"
+                    maxLength={10}
+                    placeholder="10-Digit Mobile"
                     value={regForm.phone}
                     onChange={(e) => setRegForm({ ...regForm, phone: e.target.value })}
                     className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
                   />
                 </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSendRegisterOtp}
+                    className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black"
+                  >
+                    {regOtpSent ? 'Resend OTP' : 'Send Registration OTP'}
+                  </button>
+                  {regOtpSent && (
+                    <span className="font-mono text-[11px] font-bold bg-emerald-50 text-emerald-800 px-2.5 py-1 rounded-lg border border-emerald-200">
+                      Demo OTP: {regOtpSent}
+                    </span>
+                  )}
+                </div>
+
+                {regOtpSent && (
+                  <input
+                    type="text"
+                    maxLength={4}
+                    required
+                    placeholder="Enter 4-digit OTP"
+                    value={regOtpInput}
+                    onChange={(e) => setRegOtpInput(e.target.value)}
+                    className="w-full p-2.5 border border-emerald-400 bg-emerald-50/40 rounded-xl font-mono font-black tracking-widest outline-none"
+                  />
+                )}
+
                 <select
                   value={regForm.category}
                   onChange={(e) => setRegForm({ ...regForm, category: e.target.value })}
@@ -1722,14 +1996,23 @@ export default function App() {
                     </option>
                   ))}
                 </select>
-                <input
-                  type="text"
-                  required
-                  placeholder="Usual Chowk / Metro Gate Landmark"
-                  value={regForm.landmark}
-                  onChange={(e) => setRegForm({ ...regForm, landmark: e.target.value })}
-                  className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
-                />
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    required
+                    placeholder="Chowk / Metro Gate Landmark"
+                    value={regForm.landmark}
+                    onChange={(e) => setRegForm({ ...regForm, landmark: e.target.value })}
+                    className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="City / Area (e.g. Jaipur)"
+                    value={regForm.cityArea}
+                    onChange={(e) => setRegForm({ ...regForm, cityArea: e.target.value })}
+                    className="w-full p-2.5 border border-slate-300 rounded-xl outline-none"
+                  />
+                </div>
                 <label className="flex items-center gap-2 font-bold text-slate-700">
                   <input
                     type="checkbox"
@@ -1739,11 +2022,23 @@ export default function App() {
                   />
                   100% Pure Vegetarian Stall
                 </label>
+                <label className="flex items-center gap-2 font-bold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={regForm.locationAccess}
+                    onChange={(e) => setRegForm({ ...regForm, locationAccess: e.target.checked })}
+                    className="accent-emerald-600"
+                  />
+                  Enable GPS Location Access for Live Stall Pin
+                </label>
+                <div className="p-2.5 rounded-xl bg-slate-100 text-slate-600 text-[11px] font-semibold">
+                  💳 Payment Option: Baad mein add karenge (abhi bina payment ke stall register & live ho jayega).
+                </div>
                 <button
                   type="submit"
                   className="w-full bg-[#D9381E] text-white font-black py-3 rounded-2xl shadow-lg"
                 >
-                  Register & Open Vendor Console →
+                  Verify OTP & Register Stall →
                 </button>
               </form>
             )}
